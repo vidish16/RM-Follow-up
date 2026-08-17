@@ -1,0 +1,645 @@
+import React, { useState, useEffect, useMemo } from "react";
+import {
+  Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
+  Pencil, Trash2, Check, ShieldCheck, UserRound, ChevronDown, KeyRound, UserPlus,
+} from "lucide-react";
+import { supabase } from "./supabaseClient";
+
+const LEAD_TYPES = {
+  Hot: { color: "#E4572E", bg: "#FDEDE7", icon: Flame },
+  Warm: { color: "#C8860D", bg: "#FBF1DD", icon: Sun },
+  Cold: { color: "#2F70A1", bg: "#E9F1F7", icon: Snowflake },
+};
+
+function fmtDate(d) {
+  if (!d) return "";
+  const dt = new Date(d + "T00:00:00");
+  return dt.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+function fmtTime(t) {
+  if (!t) return "";
+  const [h, m] = t.split(":").map(Number);
+  const ap = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${ap}`;
+}
+function fmtValue(v) {
+  return "₹" + Number(v || 0).toLocaleString("en-IN");
+}
+function isOverdue(f) {
+  if (f.status === "Done") return false;
+  const dt = new Date(`${f.follow_up_date}T${f.follow_up_time || "00:00"}`);
+  return dt.getTime() < Date.now();
+}
+function sortByWhen(list) {
+  return [...list].sort(
+    (a, b) => new Date(`${a.follow_up_date}T${a.follow_up_time || "00:00"}`) -
+      new Date(`${b.follow_up_date}T${b.follow_up_time || "00:00"}`)
+  );
+}
+
+const inputStyle = {
+  width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #DDE2E8",
+  fontSize: 14.5, fontFamily: "Inter, sans-serif", color: "#14213D", outline: "none", boxSizing: "border-box",
+};
+const label = { fontSize: 12, fontWeight: 700, color: "#5A6478", marginBottom: 5, display: "block", letterSpacing: "0.02em" };
+
+const fontImport = (
+  <style>{`
+    @import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button { font-family: inherit; }
+    input:focus, select:focus { border-color: #14213D !important; }
+  `}</style>
+);
+
+/* ---------- Funnel SVG ---------- */
+function FunnelChart({ counts }) {
+  const max = Math.max(counts.Cold, counts.Warm, counts.Hot, 1);
+  const scale = (n) => 70 + (n / max) * 250;
+  const wCold = scale(counts.Cold), wWarm = scale(counts.Warm), wHot = scale(counts.Hot);
+  const wTip = wHot * 0.45;
+  const cx = 200, bandH = 62, gap = 5;
+  const trap = (topW, botW, y, h) =>
+    `M ${cx - topW / 2} ${y} L ${cx + topW / 2} ${y} L ${cx + botW / 2} ${y + h} L ${cx - botW / 2} ${y + h} Z`;
+  const bands = [
+    { label: "Cold", count: counts.Cold, path: trap(wCold, wWarm, 10, bandH), color: LEAD_TYPES.Cold.color, y: 10 + bandH / 2 },
+    { label: "Warm", count: counts.Warm, path: trap(wWarm, wHot, 10 + bandH + gap, bandH), color: LEAD_TYPES.Warm.color, y: 10 + bandH + gap + bandH / 2 },
+    { label: "Hot", count: counts.Hot, path: trap(wHot, wTip, 10 + (bandH + gap) * 2, bandH), color: LEAD_TYPES.Hot.color, y: 10 + (bandH + gap) * 2 + bandH / 2 },
+  ];
+  return (
+    <svg viewBox="0 0 400 220" style={{ width: "100%", maxWidth: 360, display: "block", margin: "0 auto" }}>
+      {bands.map((b) => (
+        <g key={b.label}>
+          <path d={b.path} fill={b.color} opacity="0.92" />
+          <text x={cx} y={b.y - 6} textAnchor="middle" fontFamily="Sora, sans-serif" fontSize="15" fontWeight="700" fill="#fff">{b.count}</text>
+          <text x={cx} y={b.y + 12} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize="10.5" letterSpacing="0.06em" fill="#ffffffcc">{b.label.toUpperCase()}</text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+function LeadBadge({ type }) {
+  const cfg = LEAD_TYPES[type] || LEAD_TYPES.Warm;
+  const Icon = cfg.icon;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 999, background: cfg.bg, color: cfg.color, fontSize: 12.5, fontWeight: 700 }}>
+      <Icon size={12.5} strokeWidth={2.5} /> {type}
+    </span>
+  );
+}
+
+/* ---------- Add/Edit follow-up modal ---------- */
+function FollowupForm({ initial, rmFixed, rmOptions, onCancel, onSave }) {
+  const [f, setF] = useState(
+    initial
+      ? { ...initial }
+      : { rm_id: rmFixed?.id || "", rm_name: rmFixed?.full_name || "", cx_name: "", contact: "", quoted_value: "", follow_up_date: "", follow_up_time: "", lead_type: "Warm" }
+  );
+  const [err, setErr] = useState("");
+
+  function submit(e) {
+    e.preventDefault();
+    if (!f.rm_id || !f.cx_name.trim() || !f.contact.trim() || !f.follow_up_date || !f.follow_up_time) {
+      setErr("Please fill in RM, customer name, contact number, date and time.");
+      return;
+    }
+    if (!/^[0-9+\-\s]{7,15}$/.test(f.contact.trim())) {
+      setErr("Enter a valid contact number.");
+      return;
+    }
+    setErr("");
+    onSave({ ...f, cx_name: f.cx_name.trim(), contact: f.contact.trim() });
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#14213Db3", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
+      <form onSubmit={submit} style={{ background: "#fff", borderRadius: 16, padding: "24px 26px", width: "100%", maxWidth: 440, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px #14213D33" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <h3 style={{ margin: 0, fontFamily: "Sora, sans-serif", fontSize: 19, color: "#14213D" }}>{initial ? "Edit follow-up" : "Add follow-up"}</h3>
+          <button type="button" onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: "#8891A3" }}><X size={20} /></button>
+        </div>
+
+        {!rmFixed && (
+          <div style={{ marginBottom: 14 }}>
+            <label style={label}>RM</label>
+            <select
+              style={inputStyle}
+              value={f.rm_id}
+              onChange={(e) => {
+                const opt = rmOptions.find((r) => r.id === e.target.value);
+                setF({ ...f, rm_id: e.target.value, rm_name: opt?.full_name || "" });
+              }}
+            >
+              <option value="">Select an RM</option>
+              {rmOptions.map((r) => (
+                <option key={r.id} value={r.id}>{r.full_name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={label}>Customer name</label>
+          <input style={inputStyle} value={f.cx_name} onChange={(e) => setF({ ...f, cx_name: e.target.value })} placeholder="e.g. Ramesh Kumar" />
+        </div>
+        <div style={{ marginBottom: 14 }}>
+          <label style={label}>Customer contact number</label>
+          <input style={inputStyle} value={f.contact} onChange={(e) => setF({ ...f, contact: e.target.value })} placeholder="e.g. 98765 43210" />
+        </div>
+        <div style={{ marginBottom: 14 }}>
+          <label style={label}>Quoted value (₹)</label>
+          <input type="number" min="0" style={inputStyle} value={f.quoted_value} onChange={(e) => setF({ ...f, quoted_value: e.target.value })} placeholder="e.g. 250000" />
+        </div>
+        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+          <div style={{ flex: 1 }}>
+            <label style={label}>Follow-up date</label>
+            <input type="date" style={inputStyle} value={f.follow_up_date} onChange={(e) => setF({ ...f, follow_up_date: e.target.value })} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={label}>Follow-up time</label>
+            <input type="time" style={inputStyle} value={f.follow_up_time} onChange={(e) => setF({ ...f, follow_up_time: e.target.value })} />
+          </div>
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <label style={label}>Lead type</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            {Object.keys(LEAD_TYPES).map((t) => {
+              const cfg = LEAD_TYPES[t];
+              const active = f.lead_type === t;
+              return (
+                <button type="button" key={t} onClick={() => setF({ ...f, lead_type: t })}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: active ? `2px solid ${cfg.color}` : "1px solid #DDE2E8", background: active ? cfg.bg : "#fff", color: cfg.color, fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>
+                  {t}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {err && <div style={{ color: "#C0392B", fontSize: 13, margin: "10px 0 0", fontWeight: 600 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+          <button type="button" onClick={onCancel} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 700, cursor: "pointer" }}>Cancel</button>
+          <button type="submit" style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Save follow-up</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function FollowupRow({ f, showRM, onEdit, onDelete, onToggleDone }) {
+  const overdue = isOverdue(f);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", background: "#fff", borderRadius: 12, border: "1px solid #E7EAEF", borderLeft: `4px solid ${overdue ? "#C0392B" : f.status === "Done" ? "#2E8B57" : LEAD_TYPES[f.lead_type].color}`, marginBottom: 10, flexWrap: "wrap" }}>
+      <button onClick={() => onToggleDone(f)} title={f.status === "Done" ? "Mark pending" : "Mark done"}
+        style={{ width: 26, height: 26, borderRadius: "50%", border: f.status === "Done" ? "none" : "2px solid #C7CDD8", background: f.status === "Done" ? "#2E8B57" : "#fff", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+        {f.status === "Done" && <Check size={15} strokeWidth={3} />}
+      </button>
+      <div style={{ flex: "1 1 180px", minWidth: 160 }}>
+        <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15, color: "#14213D" }}>{f.cx_name}</div>
+        <div style={{ fontSize: 12.5, color: "#8891A3", display: "flex", alignItems: "center", gap: 4, marginTop: 2, fontFamily: "IBM Plex Mono, monospace" }}>
+          <Phone size={11} /> {f.contact}
+        </div>
+        {showRM && <div style={{ fontSize: 12, color: "#5A6478", marginTop: 3, fontWeight: 600 }}>RM: {f.rm_name}</div>}
+      </div>
+      <div style={{ minWidth: 110, fontFamily: "IBM Plex Mono, monospace", fontWeight: 700, color: "#14213D", fontSize: 14.5 }}>{fmtValue(f.quoted_value)}</div>
+      <div style={{ minWidth: 150, fontSize: 13, color: "#3A4356" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}><Calendar size={12} /> {fmtDate(f.follow_up_date)}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3, color: "#8891A3" }}><Clock size={12} /> {fmtTime(f.follow_up_time)}</div>
+      </div>
+      <LeadBadge type={f.lead_type} />
+      {overdue && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#C0392B", background: "#FBEAE8", padding: "3px 8px", borderRadius: 999 }}>OVERDUE</span>}
+      <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+        <button onClick={() => onEdit(f)} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #E7EAEF", background: "#fff", color: "#5A6478", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Pencil size={13} /></button>
+        <button onClick={() => onDelete(f.id)} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #F3D8D5", background: "#fff", color: "#C0392B", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Trash2 size={13} /></button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Login screen ---------- */
+function LoginScreen({ onLoggedIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr("");
+    setBusy(true);
+    const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (error) {
+      setErr("Incorrect email or password.");
+      return;
+    }
+    onLoggedIn(data.session);
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F4F6F8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 20px", fontFamily: "Inter, sans-serif" }}>
+      {fontImport}
+      <div style={{ textAlign: "center", marginBottom: 30 }}>
+        <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 26, color: "#14213D" }}>Follow-up Funnel</div>
+        <div style={{ color: "#8891A3", fontSize: 14, marginTop: 6 }}>Track every lead from cold to closed.</div>
+      </div>
+      <form onSubmit={submit} style={{ background: "#fff", borderRadius: 16, padding: "28px 26px", width: "100%", maxWidth: 360, border: "1px solid #E7EAEF", boxShadow: "0 4px 14px #14213D0d" }}>
+        <label style={label}>Email</label>
+        <input style={{ ...inputStyle, marginBottom: 14 }} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" type="email" />
+        <label style={label}>Password</label>
+        <input style={{ ...inputStyle, marginBottom: 8 }} value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
+        {err && <div style={{ color: "#C0392B", fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{err}</div>}
+        <button disabled={busy} type="submit" style={{ width: "100%", padding: "11px 0", borderRadius: 10, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer", marginTop: 10, opacity: busy ? 0.7 : 1 }}>
+          {busy ? "Signing in…" : "Log in"}
+        </button>
+        <div style={{ fontSize: 12, color: "#8891A3", marginTop: 14, textAlign: "center" }}>
+          Don't have a login? Ask your admin to create one for you.
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/* ---------- Change password (RM) ---------- */
+function ChangePasswordPanel() {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setMsg("");
+    if (pw.length < 6) return setMsg("Password must be at least 6 characters.");
+    if (pw !== pw2) return setMsg("Passwords don't match.");
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    setBusy(false);
+    if (error) return setMsg(error.message);
+    setMsg("Password updated.");
+    setPw(""); setPw2("");
+  }
+
+  return (
+    <form onSubmit={submit} style={{ background: "#fff", borderRadius: 14, border: "1px solid #E7EAEF", padding: "18px 18px", marginBottom: 22 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <KeyRound size={16} color="#14213D" />
+        <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15 }}>Change my password</div>
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <input style={{ ...inputStyle, flex: "1 1 160px" }} type="password" placeholder="New password" value={pw} onChange={(e) => setPw(e.target.value)} />
+        <input style={{ ...inputStyle, flex: "1 1 160px" }} type="password" placeholder="Confirm password" value={pw2} onChange={(e) => setPw2(e.target.value)} />
+        <button disabled={busy} type="submit" style={{ padding: "10px 18px", borderRadius: 9, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Update</button>
+      </div>
+      {msg && <div style={{ fontSize: 12.5, marginTop: 8, color: msg === "Password updated." ? "#2E8B57" : "#C0392B", fontWeight: 600 }}>{msg}</div>}
+    </form>
+  );
+}
+
+/* ---------- Manage RMs (Admin) ---------- */
+function ManageRMs({ rmProfiles, session, onCreated }) {
+  const [open, setOpen] = useState(false);
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [tempPassword, setTempPassword] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [resetTarget, setResetTarget] = useState(null);
+  const [resetPw, setResetPw] = useState("");
+
+  async function callApi(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  }
+
+  async function createRM(e) {
+    e.preventDefault();
+    setMsg("");
+    if (!fullName.trim() || !email.trim() || !tempPassword) return setMsg("Fill in all fields.");
+    setBusy(true);
+    const result = await callApi("/api/create-rm", { fullName: fullName.trim(), email: email.trim(), tempPassword });
+    setBusy(false);
+    if (result.error) return setMsg(result.error);
+    setMsg(`Created login for ${fullName}. Share the email + temp password with them.`);
+    setFullName(""); setEmail(""); setTempPassword("");
+    onCreated();
+  }
+
+  async function resetPassword(rm) {
+    if (!resetPw || resetPw.length < 6) return setMsg("Enter a new password (6+ characters).");
+    setBusy(true);
+    const result = await callApi("/api/reset-rm-password", { rmUserId: rm.id, newPassword: resetPw });
+    setBusy(false);
+    if (result.error) return setMsg(result.error);
+    setMsg(`Password reset for ${rm.full_name}.`);
+    setResetTarget(null); setResetPw("");
+  }
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E7EAEF", padding: "18px 18px", marginBottom: 22 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <UserPlus size={16} color="#14213D" />
+          <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15 }}>Manage RM logins</div>
+        </div>
+        <button onClick={() => setOpen(!open)} style={{ background: "none", border: "1px solid #DDE2E8", borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12.5, fontWeight: 600, color: "#5A6478" }}>
+          {open ? "Close" : "Add / Reset"}
+        </button>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 14 }}>
+          <form onSubmit={createRM} style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+            <input style={{ ...inputStyle, flex: "1 1 140px" }} placeholder="Full name" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+            <input style={{ ...inputStyle, flex: "1 1 160px" }} placeholder="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input style={{ ...inputStyle, flex: "1 1 140px" }} placeholder="Temp password" value={tempPassword} onChange={(e) => setTempPassword(e.target.value)} />
+            <button disabled={busy} type="submit" style={{ padding: "10px 16px", borderRadius: 9, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Create RM</button>
+          </form>
+
+          <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700, marginBottom: 6 }}>EXISTING RMs</div>
+          {rmProfiles.length === 0 && <div style={{ fontSize: 13, color: "#8891A3" }}>No RMs yet.</div>}
+          {rmProfiles.map((rm) => (
+            <div key={rm.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid #F0F2F5", flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 700, fontSize: 13.5, flex: "1 1 120px" }}>{rm.full_name}</div>
+              {resetTarget === rm.id ? (
+                <>
+                  <input style={{ ...inputStyle, flex: "1 1 140px", padding: "7px 10px" }} placeholder="New password" value={resetPw} onChange={(e) => setResetPw(e.target.value)} />
+                  <button onClick={() => resetPassword(rm)} style={{ padding: "7px 12px", borderRadius: 8, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 12.5 }}>Save</button>
+                  <button onClick={() => { setResetTarget(null); setResetPw(""); }} style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid #DDE2E8", background: "#fff", cursor: "pointer", fontSize: 12.5 }}>Cancel</button>
+                </>
+              ) : (
+                <button onClick={() => setResetTarget(rm.id)} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", cursor: "pointer", fontSize: 12.5, fontWeight: 600 }}>
+                  Reset password
+                </button>
+              )}
+            </div>
+          ))}
+          {msg && <div style={{ fontSize: 12.5, marginTop: 10, color: msg.startsWith("Created") || msg.startsWith("Password reset") ? "#2E8B57" : "#C0392B", fontWeight: 600 }}>{msg}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Main App ---------- */
+export default function App() {
+  const [loading, setLoading] = useState(true);
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null); // { id, full_name, role }
+  const [followups, setFollowups] = useState([]);
+  const [rmProfiles, setRmProfiles] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [filterRM, setFilterRM] = useState("All");
+  const [filterType, setFilterType] = useState("All");
+  const [filterStatus, setFilterStatus] = useState("All");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) loadProfile(data.session);
+      else setLoading(false);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+      if (sess) loadProfile(sess);
+      else { setSession(null); setProfile(null); }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  async function loadProfile(sess) {
+    setSession(sess);
+    const { data } = await supabase.from("profiles").select("*").eq("id", sess.user.id).single();
+    setProfile(data);
+    setLoading(false);
+  }
+
+  async function loadFollowups() {
+    const { data } = await supabase.from("followups").select("*");
+    setFollowups(data || []);
+  }
+  async function loadRmProfiles() {
+    const { data } = await supabase.from("profiles").select("*").eq("role", "rm").order("full_name");
+    setRmProfiles(data || []);
+  }
+
+  useEffect(() => {
+    if (profile) {
+      loadFollowups();
+      if (profile.role === "admin") loadRmProfiles();
+    }
+  }, [profile]);
+
+  async function handleSave(data) {
+    if (editing) {
+      await supabase.from("followups").update(data).eq("id", editing.id);
+    } else {
+      await supabase.from("followups").insert(data);
+    }
+    setShowForm(false); setEditing(null);
+    loadFollowups();
+  }
+  async function handleDelete(id) {
+    await supabase.from("followups").delete().eq("id", id);
+    loadFollowups();
+  }
+  async function handleToggleDone(f) {
+    await supabase.from("followups").update({ status: f.status === "Done" ? "Pending" : "Done" }).eq("id", f.id);
+    loadFollowups();
+  }
+  async function logout() {
+    await supabase.auth.signOut();
+  }
+
+  const rmFollowups = useMemo(
+    () => (profile ? sortByWhen(followups.filter((f) => f.rm_id === profile.id)) : []),
+    [followups, profile]
+  );
+  const rmCounts = useMemo(() => {
+    const c = { Hot: 0, Warm: 0, Cold: 0 };
+    rmFollowups.forEach((f) => c[f.lead_type]++);
+    return c;
+  }, [rmFollowups]);
+
+  const adminFiltered = useMemo(() => {
+    let list = followups;
+    if (filterRM !== "All") list = list.filter((f) => f.rm_name === filterRM);
+    if (filterType !== "All") list = list.filter((f) => f.lead_type === filterType);
+    if (filterStatus === "Overdue") list = list.filter((f) => isOverdue(f));
+    else if (filterStatus !== "All") list = list.filter((f) => f.status === filterStatus);
+    return sortByWhen(list);
+  }, [followups, filterRM, filterType, filterStatus]);
+
+  const allCounts = useMemo(() => {
+    const c = { Hot: 0, Warm: 0, Cold: 0 };
+    followups.forEach((f) => c[f.lead_type]++);
+    return c;
+  }, [followups]);
+
+  const perRM = useMemo(() => {
+    const map = {};
+    rmProfiles.forEach((r) => (map[r.full_name] = { Hot: 0, Warm: 0, Cold: 0, total: 0, overdue: 0 }));
+    followups.forEach((f) => {
+      if (!map[f.rm_name]) map[f.rm_name] = { Hot: 0, Warm: 0, Cold: 0, total: 0, overdue: 0 };
+      map[f.rm_name][f.lead_type]++;
+      map[f.rm_name].total++;
+      if (isOverdue(f)) map[f.rm_name].overdue++;
+    });
+    return map;
+  }, [followups, rmProfiles]);
+
+  const shell = { minHeight: "100vh", background: "#F4F6F8", fontFamily: "Inter, sans-serif", color: "#14213D" };
+
+  if (loading) {
+    return <div style={{ ...shell, display: "flex", alignItems: "center", justifyContent: "center" }}>{fontImport}<div style={{ color: "#8891A3" }}>Loading…</div></div>;
+  }
+
+  if (!session || !profile) {
+    return <LoginScreen onLoggedIn={loadProfile} />;
+  }
+
+  /* ---------- RM VIEW ---------- */
+  if (profile.role === "rm") {
+    return (
+      <div style={shell}>
+        {fontImport}
+        <div style={{ maxWidth: 780, margin: "0 auto", padding: "26px 18px 60px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, flexWrap: "wrap", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>RM profile</div>
+              <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 23 }}>{profile.full_name}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => { setEditing(null); setShowForm(true); }} style={{ display: "flex", alignItems: "center", gap: 7, padding: "10px 16px", borderRadius: 10, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13.5 }}>
+                <Plus size={15} /> Add follow-up
+              </button>
+              <button onClick={logout} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderRadius: 10, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 600, cursor: "pointer", fontSize: 13.5 }}>
+                <LogOut size={14} /> Log out
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginBottom: 22, flexWrap: "wrap" }}>
+            {Object.keys(LEAD_TYPES).map((t) => (
+              <div key={t} style={{ flex: "1 1 100px", background: "#fff", border: "1px solid #E7EAEF", borderRadius: 12, padding: "12px 14px" }}>
+                <div style={{ marginBottom: 4 }}><LeadBadge type={t} /></div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 22 }}>{rmCounts[t]}</div>
+              </div>
+            ))}
+          </div>
+
+          <ChangePasswordPanel />
+
+          {rmFollowups.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "50px 20px", color: "#8891A3", background: "#fff", borderRadius: 14, border: "1px dashed #DDE2E8" }}>
+              No follow-ups yet. Add your first one to start the funnel.
+            </div>
+          ) : (
+            rmFollowups.map((f) => (
+              <FollowupRow key={f.id} f={f} showRM={false} onEdit={(rec) => { setEditing(rec); setShowForm(true); }} onDelete={handleDelete} onToggleDone={handleToggleDone} />
+            ))
+          )}
+        </div>
+
+        {showForm && (
+          <FollowupForm initial={editing} rmFixed={profile} rmOptions={[]} onCancel={() => { setShowForm(false); setEditing(null); }} onSave={handleSave} />
+        )}
+      </div>
+    );
+  }
+
+  /* ---------- ADMIN VIEW ---------- */
+  return (
+    <div style={shell}>
+      {fontImport}
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "26px 18px 60px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Admin — viewed by me</div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 23 }}>All RM follow-ups</div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => { setEditing(null); setShowForm(true); }} style={{ display: "flex", alignItems: "center", gap: 7, padding: "10px 16px", borderRadius: 10, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13.5 }}>
+              <Plus size={15} /> Add follow-up
+            </button>
+            <button onClick={logout} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderRadius: 10, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 600, cursor: "pointer", fontSize: 13.5 }}>
+              <LogOut size={14} /> Log out
+            </button>
+          </div>
+        </div>
+
+        <ManageRMs rmProfiles={rmProfiles} session={session} onCreated={loadRmProfiles} />
+
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 26 }}>
+          <div style={{ flex: "1 1 340px", background: "#14213D", borderRadius: 16, padding: "20px 16px" }}>
+            <FunnelChart counts={allCounts} />
+          </div>
+          <div style={{ flex: "2 1 400px", background: "#fff", borderRadius: 16, border: "1px solid #E7EAEF", padding: "16px 18px", overflowX: "auto" }}>
+            <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Per-RM breakdown</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ color: "#8891A3", textAlign: "left" }}>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>RM</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Hot</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Warm</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Cold</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Total</th>
+                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Overdue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.keys(perRM).length === 0 && (
+                  <tr><td colSpan="6" style={{ padding: "14px 8px", color: "#8891A3" }}>No RM data yet.</td></tr>
+                )}
+                {Object.entries(perRM).map(([name, c]) => (
+                  <tr key={name} style={{ borderTop: "1px solid #F0F2F5" }}>
+                    <td style={{ padding: "8px", fontWeight: 700 }}>{name}</td>
+                    <td style={{ padding: "8px", color: LEAD_TYPES.Hot.color, fontWeight: 700 }}>{c.Hot}</td>
+                    <td style={{ padding: "8px", color: LEAD_TYPES.Warm.color, fontWeight: 700 }}>{c.Warm}</td>
+                    <td style={{ padding: "8px", color: LEAD_TYPES.Cold.color, fontWeight: 700 }}>{c.Cold}</td>
+                    <td style={{ padding: "8px", fontWeight: 700 }}>{c.total}</td>
+                    <td style={{ padding: "8px", color: c.overdue ? "#C0392B" : "#8891A3", fontWeight: 700 }}>{c.overdue}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+          {[
+            { val: filterRM, set: setFilterRM, options: ["All", ...rmProfiles.map((r) => r.full_name)], labelPrefix: "RM: " },
+            { val: filterType, set: setFilterType, options: ["All", "Hot", "Warm", "Cold"], labelPrefix: "Type: " },
+            { val: filterStatus, set: setFilterStatus, options: ["All", "Pending", "Done", "Overdue"], labelPrefix: "Status: " },
+          ].map((sel, i) => (
+            <div key={i} style={{ position: "relative" }}>
+              <select value={sel.val} onChange={(e) => sel.set(e.target.value)} style={{ appearance: "none", padding: "9px 30px 9px 12px", borderRadius: 9, border: "1px solid #DDE2E8", background: "#fff", fontSize: 13, fontWeight: 600, color: "#14213D", cursor: "pointer" }}>
+                {sel.options.map((o) => <option key={o} value={o}>{sel.labelPrefix}{o}</option>)}
+              </select>
+              <ChevronDown size={13} style={{ position: "absolute", right: 10, top: 11, pointerEvents: "none", color: "#8891A3" }} />
+            </div>
+          ))}
+        </div>
+
+        {adminFiltered.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "50px 20px", color: "#8891A3", background: "#fff", borderRadius: 14, border: "1px dashed #DDE2E8" }}>
+            No follow-ups match these filters.
+          </div>
+        ) : (
+          adminFiltered.map((f) => (
+            <FollowupRow key={f.id} f={f} showRM={true} onEdit={(rec) => { setEditing(rec); setShowForm(true); }} onDelete={handleDelete} onToggleDone={handleToggleDone} />
+          ))
+        )}
+      </div>
+
+      {showForm && (
+        <FollowupForm initial={editing} rmFixed={null} rmOptions={rmProfiles} onCancel={() => { setShowForm(false); setEditing(null); }} onSave={handleSave} />
+      )}
+    </div>
+  );
+}
