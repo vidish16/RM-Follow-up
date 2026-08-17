@@ -1,15 +1,26 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
-  Pencil, Trash2, Check, ShieldCheck, UserRound, ChevronDown, KeyRound, UserPlus,
+  Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
+
+const ACCENT = "#5B34EA"; // swap for exact UC brand hex/logo whenever you have it
 
 const LEAD_TYPES = {
   Hot: { color: "#E4572E", bg: "#FDEDE7", icon: Flame },
   Warm: { color: "#C8860D", bg: "#FBF1DD", icon: Sun },
   Cold: { color: "#2F70A1", bg: "#E9F1F7", icon: Snowflake },
 };
+
+const TIMEFRAMES = ["All", "Today", "Tomorrow", "This Week", "Overdue"];
+
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => {
+  const value = `${String(h).padStart(2, "0")}:00`;
+  const ap = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return { value, label: `${h12} ${ap}` };
+});
 
 function fmtDate(d) {
   if (!d) return "";
@@ -18,10 +29,10 @@ function fmtDate(d) {
 }
 function fmtTime(t) {
   if (!t) return "";
-  const [h, m] = t.split(":").map(Number);
+  const h = parseInt(t.split(":")[0], 10);
   const ap = h >= 12 ? "PM" : "AM";
   const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${String(m).padStart(2, "0")} ${ap}`;
+  return `${h12} ${ap}`;
 }
 function fmtValue(v) {
   return "₹" + Number(v || 0).toLocaleString("en-IN");
@@ -37,6 +48,20 @@ function sortByWhen(list) {
       new Date(`${b.follow_up_date}T${b.follow_up_time || "00:00"}`)
   );
 }
+function matchesTimeframe(f, tf) {
+  if (tf === "All") return true;
+  if (tf === "Overdue") return isOverdue(f);
+  const dt = new Date(`${f.follow_up_date}T00:00:00`);
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startTomorrow = new Date(startToday); startTomorrow.setDate(startTomorrow.getDate() + 1);
+  const startDayAfter = new Date(startToday); startDayAfter.setDate(startDayAfter.getDate() + 2);
+  const endWeek = new Date(startToday); endWeek.setDate(endWeek.getDate() + 7);
+  if (tf === "Today") return dt >= startToday && dt < startTomorrow;
+  if (tf === "Tomorrow") return dt >= startTomorrow && dt < startDayAfter;
+  if (tf === "This Week") return dt >= startToday && dt < endWeek;
+  return true;
+}
 
 const inputStyle = {
   width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #DDE2E8",
@@ -50,9 +75,17 @@ const fontImport = (
     * { box-sizing: border-box; }
     body { margin: 0; }
     button { font-family: inherit; }
-    input:focus, select:focus { border-color: #14213D !important; }
+    input:focus, select:focus, textarea:focus { border-color: #14213D !important; }
   `}</style>
 );
+
+function Logo({ size = 34 }) {
+  return (
+    <div style={{ width: size, height: size, borderRadius: size * 0.26, background: ACCENT, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: size * 0.4, flexShrink: 0 }}>
+      UC
+    </div>
+  );
+}
 
 /* ---------- Funnel SVG ---------- */
 function FunnelChart({ counts }) {
@@ -88,6 +121,94 @@ function LeadBadge({ type }) {
     <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 999, background: cfg.bg, color: cfg.color, fontSize: 12.5, fontWeight: 700 }}>
       <Icon size={12.5} strokeWidth={2.5} /> {type}
     </span>
+  );
+}
+
+function StatCard({ label: lbl, value, accent }) {
+  return (
+    <div style={{ flex: "1 1 160px", background: "#F7F8FA", borderRadius: 12, padding: "14px 16px" }}>
+      <div style={{ fontSize: 11.5, color: "#8891A3", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6 }}>{lbl}</div>
+      <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 22, color: accent || "#14213D" }}>{value}</div>
+    </div>
+  );
+}
+
+/* ---------- Analytics ---------- */
+function AnalyticsPanel({ followups, totalOverdue }) {
+  const totalCount = followups.length;
+  const doneCount = followups.filter((f) => f.status === "Done").length;
+  const conversionRate = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
+  const openPipeline = followups.filter((f) => f.status !== "Done").reduce((s, f) => s + Number(f.quoted_value || 0), 0);
+
+  const valueByRM = useMemo(() => {
+    const map = {};
+    followups.forEach((f) => { map[f.rm_name] = (map[f.rm_name] || 0) + Number(f.quoted_value || 0); });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [followups]);
+  const maxVal = Math.max(...valueByRM.map(([, v]) => v), 1);
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #E7EAEF", padding: "18px 18px", marginBottom: 26 }}>
+      <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Pipeline insights</div>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 20 }}>
+        <StatCard label="Open pipeline value" value={fmtValue(openPipeline)} />
+        <StatCard label="Conversion rate" value={`${conversionRate}%`} />
+        <StatCard label="Overdue follow-ups" value={totalOverdue} accent={totalOverdue ? "#C0392B" : undefined} />
+      </div>
+      <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700, marginBottom: 8 }}>QUOTED VALUE BY RM</div>
+      {valueByRM.length === 0 && <div style={{ fontSize: 13, color: "#8891A3" }}>No data yet.</div>}
+      {valueByRM.map(([name, val]) => (
+        <div key={name} style={{ marginBottom: 9 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 3 }}>
+            <span style={{ fontWeight: 700 }}>{name}</span>
+            <span style={{ fontFamily: "IBM Plex Mono, monospace" }}>{fmtValue(val)}</span>
+          </div>
+          <div style={{ height: 8, borderRadius: 999, background: "#F0F2F5" }}>
+            <div style={{ height: 8, borderRadius: 999, background: ACCENT, width: `${(val / maxVal) * 100}%` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Filter ribbon ---------- */
+function FilterRibbon({ timeframe, setTimeframe, search, setSearch, leadType, setLeadType, status, setStatus, rmFilter, setRmFilter, rmOptions, showRMFilter }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+        {TIMEFRAMES.map((tf) => (
+          <button key={tf} onClick={() => setTimeframe(tf)} style={{
+            padding: "7px 14px", borderRadius: 999, border: timeframe === tf ? "none" : "1px solid #DDE2E8",
+            background: timeframe === tf ? "#14213D" : "#fff", color: timeframe === tf ? "#fff" : "#5A6478",
+            fontWeight: 700, fontSize: 12.5, cursor: "pointer",
+          }}>{tf}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ position: "relative", flex: "1 1 220px" }}>
+          <Search size={14} style={{ position: "absolute", left: 11, top: 12, color: "#8891A3" }} />
+          <input style={{ ...inputStyle, paddingLeft: 32 }} placeholder="Search customer name or number" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        {showRMFilter && (
+          <select value={rmFilter} onChange={(e) => setRmFilter(e.target.value)} style={{ ...inputStyle, flex: "0 1 160px" }}>
+            <option value="All">All RMs</option>
+            {rmOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        )}
+        <select value={leadType} onChange={(e) => setLeadType(e.target.value)} style={{ ...inputStyle, flex: "0 1 130px" }}>
+          <option value="All">All types</option>
+          <option value="Hot">Hot</option>
+          <option value="Warm">Warm</option>
+          <option value="Cold">Cold</option>
+        </select>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ ...inputStyle, flex: "0 1 140px" }}>
+          <option value="All">All statuses</option>
+          <option value="Pending">Pending</option>
+          <option value="Done">Done</option>
+        </select>
+      </div>
+    </div>
   );
 }
 
@@ -159,8 +280,11 @@ function FollowupForm({ initial, rmFixed, rmOptions, onCancel, onSave }) {
             <input type="date" style={inputStyle} value={f.follow_up_date} onChange={(e) => setF({ ...f, follow_up_date: e.target.value })} />
           </div>
           <div style={{ flex: 1 }}>
-            <label style={label}>Follow-up time</label>
-            <input type="time" style={inputStyle} value={f.follow_up_time} onChange={(e) => setF({ ...f, follow_up_time: e.target.value })} />
+            <label style={label}>Follow-up hour</label>
+            <select style={inputStyle} value={f.follow_up_time} onChange={(e) => setF({ ...f, follow_up_time: e.target.value })}>
+              <option value="">Select hour</option>
+              {HOUR_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
           </div>
         </div>
         <div style={{ marginBottom: 8 }}>
@@ -242,8 +366,11 @@ function LoginScreen({ onLoggedIn }) {
     <div style={{ minHeight: "100vh", background: "#F4F6F8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 20px", fontFamily: "Inter, sans-serif" }}>
       {fontImport}
       <div style={{ textAlign: "center", marginBottom: 30 }}>
-        <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 26, color: "#14213D" }}>Follow-up Funnel</div>
-        <div style={{ color: "#8891A3", fontSize: 14, marginTop: 6 }}>Track every lead from cold to closed.</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 8 }}>
+          <Logo />
+          <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 26, color: "#14213D" }}>Follow-up Funnel</div>
+        </div>
+        <div style={{ color: "#8891A3", fontSize: 14 }}>Track every lead from cold to closed.</div>
       </div>
       <form onSubmit={submit} style={{ background: "#fff", borderRadius: 16, padding: "28px 26px", width: "100%", maxWidth: 360, border: "1px solid #E7EAEF", boxShadow: "0 4px 14px #14213D0d" }}>
         <label style={label}>Email</label>
@@ -262,7 +389,54 @@ function LoginScreen({ onLoggedIn }) {
   );
 }
 
-/* ---------- Change password (RM) ---------- */
+/* ---------- Forced first-login password change ---------- */
+function ForcedPasswordModal({ session, onDone }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setMsg("");
+    if (pw.length < 6) return setMsg("Password must be at least 6 characters.");
+    if (pw !== pw2) return setMsg("Passwords don't match.");
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    if (error) { setBusy(false); return setMsg(error.message); }
+    try {
+      await fetch("/api/clear-first-login-flag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      });
+    } catch (e) { /* non-fatal — worst case they're asked again next login */ }
+    setBusy(false);
+    onDone();
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F4F6F8", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "Inter, sans-serif" }}>
+      {fontImport}
+      <form onSubmit={submit} style={{ background: "#fff", borderRadius: 16, padding: "28px 26px", width: "100%", maxWidth: 380, border: "1px solid #E7EAEF", boxShadow: "0 4px 14px #14213D0d" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <Logo size={30} />
+          <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 18 }}>Set your password</div>
+        </div>
+        <div style={{ fontSize: 13, color: "#8891A3", marginBottom: 16 }}>For security, choose your own password before continuing. You won't see this again.</div>
+        <label style={label}>New password</label>
+        <input style={{ ...inputStyle, marginBottom: 12 }} type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
+        <label style={label}>Confirm password</label>
+        <input style={{ ...inputStyle, marginBottom: 8 }} type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} />
+        {msg && <div style={{ color: "#C0392B", fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{msg}</div>}
+        <button disabled={busy} type="submit" style={{ width: "100%", padding: "11px 0", borderRadius: 10, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer", marginTop: 6 }}>
+          {busy ? "Saving…" : "Set password & continue"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/* ---------- Voluntary change-password panel (toggle, not forced) ---------- */
 function ChangePasswordPanel() {
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
@@ -303,11 +477,13 @@ function ManageRMs({ rmProfiles, session, onCreated }) {
   const [open, setOpen] = useState(false);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
-  const [tempPassword, setTempPassword] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [resetTarget, setResetTarget] = useState(null);
   const [resetPw, setResetPw] = useState("");
+  const [bulkText, setBulkText] = useState("");
+  const [bulkResults, setBulkResults] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   async function callApi(path, body) {
     const res = await fetch(path, {
@@ -321,13 +497,13 @@ function ManageRMs({ rmProfiles, session, onCreated }) {
   async function createRM(e) {
     e.preventDefault();
     setMsg("");
-    if (!fullName.trim() || !email.trim() || !tempPassword) return setMsg("Fill in all fields.");
+    if (!fullName.trim() || !email.trim()) return setMsg("Fill in name and email.");
     setBusy(true);
-    const result = await callApi("/api/create-rm", { fullName: fullName.trim(), email: email.trim(), tempPassword });
+    const result = await callApi("/api/create-rm", { fullName: fullName.trim(), email: email.trim() });
     setBusy(false);
     if (result.error) return setMsg(result.error);
-    setMsg(`Created login for ${fullName}. Share the email + temp password with them.`);
-    setFullName(""); setEmail(""); setTempPassword("");
+    setMsg(`Created login for ${fullName} — password is 123456. They'll be asked to change it on first login.`);
+    setFullName(""); setEmail("");
     onCreated();
   }
 
@@ -337,8 +513,24 @@ function ManageRMs({ rmProfiles, session, onCreated }) {
     const result = await callApi("/api/reset-rm-password", { rmUserId: rm.id, newPassword: resetPw });
     setBusy(false);
     if (result.error) return setMsg(result.error);
-    setMsg(`Password reset for ${rm.full_name}.`);
+    setMsg(`Password reset for ${rm.full_name}. They'll be asked to change it again on next login.`);
     setResetTarget(null); setResetPw("");
+  }
+
+  async function bulkCreate() {
+    setBulkResults(null); setMsg("");
+    const lines = bulkText.split("\n").map((l) => l.trim()).filter(Boolean);
+    const rms = lines.map((line) => {
+      const [n, e] = line.split(",").map((s) => s?.trim());
+      return { fullName: n, email: e };
+    });
+    if (rms.length === 0) return setMsg("Paste at least one line: Full Name, email");
+    setBulkBusy(true);
+    const result = await callApi("/api/create-rm-bulk", { rms });
+    setBulkBusy(false);
+    if (result.error) return setMsg(result.error);
+    setBulkResults(result.results);
+    onCreated();
   }
 
   return (
@@ -355,14 +547,29 @@ function ManageRMs({ rmProfiles, session, onCreated }) {
 
       {open && (
         <div style={{ marginTop: 14 }}>
-          <form onSubmit={createRM} style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-            <input style={{ ...inputStyle, flex: "1 1 140px" }} placeholder="Full name" value={fullName} onChange={(e) => setFullName(e.target.value)} />
-            <input style={{ ...inputStyle, flex: "1 1 160px" }} placeholder="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <input style={{ ...inputStyle, flex: "1 1 140px" }} placeholder="Temp password" value={tempPassword} onChange={(e) => setTempPassword(e.target.value)} />
+          <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700, marginBottom: 6 }}>ADD ONE RM (default password: 123456)</div>
+          <form onSubmit={createRM} style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
+            <input style={{ ...inputStyle, flex: "1 1 160px" }} placeholder="Full name" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+            <input style={{ ...inputStyle, flex: "1 1 200px" }} placeholder="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
             <button disabled={busy} type="submit" style={{ padding: "10px 16px", borderRadius: 9, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Create RM</button>
           </form>
 
-          <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700, marginBottom: 6 }}>EXISTING RMs</div>
+          <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700, marginBottom: 6 }}>BULK CREATE (default password: 123456)</div>
+          <textarea rows={4} style={{ ...inputStyle, marginBottom: 8, fontFamily: "IBM Plex Mono, monospace", fontSize: 13 }} placeholder={"One RM per line: Full Name, email\ne.g. Priya Sharma, priya.sharma@company.com"} value={bulkText} onChange={(e) => setBulkText(e.target.value)} />
+          <button disabled={bulkBusy} onClick={bulkCreate} style={{ padding: "9px 16px", borderRadius: 9, border: "none", background: ACCENT, color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13, marginBottom: 8 }}>
+            {bulkBusy ? "Creating…" : "Create all"}
+          </button>
+          {bulkResults && (
+            <div style={{ marginBottom: 10 }}>
+              {bulkResults.map((r, i) => (
+                <div key={i} style={{ fontSize: 12.5, color: r.ok ? "#2E8B57" : "#C0392B", fontWeight: 600 }}>
+                  {r.ok ? `✓ ${r.email} created` : `✗ ${r.email}: ${r.error}`}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700, margin: "14px 0 6px", borderTop: "1px solid #F0F2F5", paddingTop: 14 }}>EXISTING RMs</div>
           {rmProfiles.length === 0 && <div style={{ fontSize: 13, color: "#8891A3" }}>No RMs yet.</div>}
           {rmProfiles.map((rm) => (
             <div key={rm.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid #F0F2F5", flexWrap: "wrap" }}>
@@ -391,11 +598,22 @@ function ManageRMs({ rmProfiles, session, onCreated }) {
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState(null);
-  const [profile, setProfile] = useState(null); // { id, full_name, role }
+  const [profile, setProfile] = useState(null); // { id, full_name, role, must_change_password }
   const [followups, setFollowups] = useState([]);
   const [rmProfiles, setRmProfiles] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [showChangePw, setShowChangePw] = useState(false);
+
+  // RM view filters
+  const [rmTimeframe, setRmTimeframe] = useState("All");
+  const [rmSearch, setRmSearch] = useState("");
+  const [rmLeadType, setRmLeadType] = useState("All");
+  const [rmStatus, setRmStatus] = useState("All");
+
+  // Admin view filters
+  const [filterTimeframe, setFilterTimeframe] = useState("All");
+  const [filterSearch, setFilterSearch] = useState("");
   const [filterRM, setFilterRM] = useState("All");
   const [filterType, setFilterType] = useState("All");
   const [filterStatus, setFilterStatus] = useState("All");
@@ -429,7 +647,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (profile) {
+    if (profile && !profile.must_change_password) {
       loadFollowups();
       if (profile.role === "admin") loadRmProfiles();
     }
@@ -456,24 +674,38 @@ export default function App() {
     await supabase.auth.signOut();
   }
 
-  const rmFollowups = useMemo(
-    () => (profile ? sortByWhen(followups.filter((f) => f.rm_id === profile.id)) : []),
-    [followups, profile]
-  );
+  const rmFollowupsFiltered = useMemo(() => {
+    if (!profile) return [];
+    let list = sortByWhen(followups.filter((f) => f.rm_id === profile.id));
+    list = list.filter((f) => matchesTimeframe(f, rmTimeframe));
+    if (rmSearch.trim()) {
+      const q = rmSearch.trim().toLowerCase();
+      list = list.filter((f) => f.cx_name.toLowerCase().includes(q) || f.contact.includes(q));
+    }
+    if (rmLeadType !== "All") list = list.filter((f) => f.lead_type === rmLeadType);
+    if (rmStatus !== "All") list = list.filter((f) => f.status === rmStatus);
+    return list;
+  }, [followups, profile, rmTimeframe, rmSearch, rmLeadType, rmStatus]);
+
   const rmCounts = useMemo(() => {
     const c = { Hot: 0, Warm: 0, Cold: 0 };
-    rmFollowups.forEach((f) => c[f.lead_type]++);
+    if (!profile) return c;
+    followups.filter((f) => f.rm_id === profile.id).forEach((f) => c[f.lead_type]++);
     return c;
-  }, [rmFollowups]);
+  }, [followups, profile]);
 
   const adminFiltered = useMemo(() => {
     let list = followups;
+    list = list.filter((f) => matchesTimeframe(f, filterTimeframe));
+    if (filterSearch.trim()) {
+      const q = filterSearch.trim().toLowerCase();
+      list = list.filter((f) => f.cx_name.toLowerCase().includes(q) || f.contact.includes(q));
+    }
     if (filterRM !== "All") list = list.filter((f) => f.rm_name === filterRM);
     if (filterType !== "All") list = list.filter((f) => f.lead_type === filterType);
-    if (filterStatus === "Overdue") list = list.filter((f) => isOverdue(f));
-    else if (filterStatus !== "All") list = list.filter((f) => f.status === filterStatus);
+    if (filterStatus !== "All") list = list.filter((f) => f.status === filterStatus);
     return sortByWhen(list);
-  }, [followups, filterRM, filterType, filterStatus]);
+  }, [followups, filterTimeframe, filterSearch, filterRM, filterType, filterStatus]);
 
   const allCounts = useMemo(() => {
     const c = { Hot: 0, Warm: 0, Cold: 0 };
@@ -493,6 +725,8 @@ export default function App() {
     return map;
   }, [followups, rmProfiles]);
 
+  const totalOverdue = useMemo(() => Object.values(perRM).reduce((s, c) => s + c.overdue, 0), [perRM]);
+
   const shell = { minHeight: "100vh", background: "#F4F6F8", fontFamily: "Inter, sans-serif", color: "#14213D" };
 
   if (loading) {
@@ -503,6 +737,10 @@ export default function App() {
     return <LoginScreen onLoggedIn={loadProfile} />;
   }
 
+  if (profile.must_change_password) {
+    return <ForcedPasswordModal session={session} onDone={() => setProfile({ ...profile, must_change_password: false })} />;
+  }
+
   /* ---------- RM VIEW ---------- */
   if (profile.role === "rm") {
     return (
@@ -510,13 +748,19 @@ export default function App() {
         {fontImport}
         <div style={{ maxWidth: 780, margin: "0 auto", padding: "26px 18px 60px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, flexWrap: "wrap", gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>RM profile</div>
-              <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 23 }}>{profile.full_name}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <Logo />
+              <div>
+                <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>RM profile</div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 23 }}>{profile.full_name}</div>
+              </div>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button onClick={() => { setEditing(null); setShowForm(true); }} style={{ display: "flex", alignItems: "center", gap: 7, padding: "10px 16px", borderRadius: 10, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13.5 }}>
                 <Plus size={15} /> Add follow-up
+              </button>
+              <button onClick={() => setShowChangePw(!showChangePw)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderRadius: 10, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 600, cursor: "pointer", fontSize: 13.5 }}>
+                <KeyRound size={14} /> Password
               </button>
               <button onClick={logout} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderRadius: 10, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 600, cursor: "pointer", fontSize: 13.5 }}>
                 <LogOut size={14} /> Log out
@@ -533,14 +777,22 @@ export default function App() {
             ))}
           </div>
 
-          <ChangePasswordPanel />
+          {showChangePw && <ChangePasswordPanel />}
 
-          {rmFollowups.length === 0 ? (
+          <FilterRibbon
+            timeframe={rmTimeframe} setTimeframe={setRmTimeframe}
+            search={rmSearch} setSearch={setRmSearch}
+            leadType={rmLeadType} setLeadType={setRmLeadType}
+            status={rmStatus} setStatus={setRmStatus}
+            showRMFilter={false}
+          />
+
+          {rmFollowupsFiltered.length === 0 ? (
             <div style={{ textAlign: "center", padding: "50px 20px", color: "#8891A3", background: "#fff", borderRadius: 14, border: "1px dashed #DDE2E8" }}>
-              No follow-ups yet. Add your first one to start the funnel.
+              No follow-ups match. Add one, or adjust the filters above.
             </div>
           ) : (
-            rmFollowups.map((f) => (
+            rmFollowupsFiltered.map((f) => (
               <FollowupRow key={f.id} f={f} showRM={false} onEdit={(rec) => { setEditing(rec); setShowForm(true); }} onDelete={handleDelete} onToggleDone={handleToggleDone} />
             ))
           )}
@@ -559,19 +811,27 @@ export default function App() {
       {fontImport}
       <div style={{ maxWidth: 980, margin: "0 auto", padding: "26px 18px 60px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, flexWrap: "wrap", gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Admin — viewed by me</div>
-            <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 23 }}>All RM follow-ups</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <Logo />
+            <div>
+              <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Admin — viewed by me</div>
+              <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 23 }}>All RM follow-ups</div>
+            </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button onClick={() => { setEditing(null); setShowForm(true); }} style={{ display: "flex", alignItems: "center", gap: 7, padding: "10px 16px", borderRadius: 10, border: "none", background: "#14213D", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13.5 }}>
               <Plus size={15} /> Add follow-up
+            </button>
+            <button onClick={() => setShowChangePw(!showChangePw)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderRadius: 10, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 600, cursor: "pointer", fontSize: 13.5 }}>
+              <KeyRound size={14} /> Password
             </button>
             <button onClick={logout} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderRadius: 10, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 600, cursor: "pointer", fontSize: 13.5 }}>
               <LogOut size={14} /> Log out
             </button>
           </div>
         </div>
+
+        {showChangePw && <ChangePasswordPanel />}
 
         <ManageRMs rmProfiles={rmProfiles} session={session} onCreated={loadRmProfiles} />
 
@@ -611,20 +871,17 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-          {[
-            { val: filterRM, set: setFilterRM, options: ["All", ...rmProfiles.map((r) => r.full_name)], labelPrefix: "RM: " },
-            { val: filterType, set: setFilterType, options: ["All", "Hot", "Warm", "Cold"], labelPrefix: "Type: " },
-            { val: filterStatus, set: setFilterStatus, options: ["All", "Pending", "Done", "Overdue"], labelPrefix: "Status: " },
-          ].map((sel, i) => (
-            <div key={i} style={{ position: "relative" }}>
-              <select value={sel.val} onChange={(e) => sel.set(e.target.value)} style={{ appearance: "none", padding: "9px 30px 9px 12px", borderRadius: 9, border: "1px solid #DDE2E8", background: "#fff", fontSize: 13, fontWeight: 600, color: "#14213D", cursor: "pointer" }}>
-                {sel.options.map((o) => <option key={o} value={o}>{sel.labelPrefix}{o}</option>)}
-              </select>
-              <ChevronDown size={13} style={{ position: "absolute", right: 10, top: 11, pointerEvents: "none", color: "#8891A3" }} />
-            </div>
-          ))}
-        </div>
+        <AnalyticsPanel followups={followups} totalOverdue={totalOverdue} />
+
+        <FilterRibbon
+          timeframe={filterTimeframe} setTimeframe={setFilterTimeframe}
+          search={filterSearch} setSearch={setFilterSearch}
+          leadType={filterType} setLeadType={setFilterType}
+          status={filterStatus} setStatus={setFilterStatus}
+          rmFilter={filterRM} setRmFilter={setFilterRM}
+          rmOptions={rmProfiles.map((r) => r.full_name)}
+          showRMFilter={true}
+        />
 
         {adminFiltered.length === 0 ? (
           <div style={{ textAlign: "center", padding: "50px 20px", color: "#8891A3", background: "#fff", borderRadius: 14, border: "1px dashed #DDE2E8" }}>
