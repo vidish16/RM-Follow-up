@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
-  Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search,
+  Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search, ChevronRight,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -76,6 +76,7 @@ const fontImport = (
     body { margin: 0; }
     button { font-family: inherit; }
     input:focus, select:focus, textarea:focus { border-color: #14213D !important; }
+    .rm-row:hover { background: #F7F8FA; }
   `}</style>
 );
 
@@ -87,29 +88,36 @@ function Logo({ size = 34 }) {
   );
 }
 
-/* ---------- Funnel SVG ---------- */
+/* ---------- Funnel chart ----------
+   Each stage is an independent centered bar, sized only by its own count.
+   (Earlier version chained each band's bottom width into the next band's
+   top width, which warped into a diamond/hexagon shape whenever counts
+   didn't decrease monotonically — e.g. small or uneven data.) */
 function FunnelChart({ counts }) {
   const max = Math.max(counts.Cold, counts.Warm, counts.Hot, 1);
-  const scale = (n) => 70 + (n / max) * 250;
-  const wCold = scale(counts.Cold), wWarm = scale(counts.Warm), wHot = scale(counts.Hot);
-  const wTip = wHot * 0.45;
-  const cx = 200, bandH = 62, gap = 5;
-  const trap = (topW, botW, y, h) =>
-    `M ${cx - topW / 2} ${y} L ${cx + topW / 2} ${y} L ${cx + botW / 2} ${y + h} L ${cx - botW / 2} ${y + h} Z`;
-  const bands = [
-    { label: "Cold", count: counts.Cold, path: trap(wCold, wWarm, 10, bandH), color: LEAD_TYPES.Cold.color, y: 10 + bandH / 2 },
-    { label: "Warm", count: counts.Warm, path: trap(wWarm, wHot, 10 + bandH + gap, bandH), color: LEAD_TYPES.Warm.color, y: 10 + bandH + gap + bandH / 2 },
-    { label: "Hot", count: counts.Hot, path: trap(wHot, wTip, 10 + (bandH + gap) * 2, bandH), color: LEAD_TYPES.Hot.color, y: 10 + (bandH + gap) * 2 + bandH / 2 },
+  const minW = 90, maxW = 320;
+  const widthFor = (n) => minW + (n / max) * (maxW - minW);
+  const stages = [
+    { label: "Cold", count: counts.Cold, color: LEAD_TYPES.Cold.color },
+    { label: "Warm", count: counts.Warm, color: LEAD_TYPES.Warm.color },
+    { label: "Hot", count: counts.Hot, color: LEAD_TYPES.Hot.color },
   ];
+  const barH = 56, gap = 12, padTop = 14;
+  const totalH = padTop * 2 + barH * 3 + gap * 2;
   return (
-    <svg viewBox="0 0 400 220" style={{ width: "100%", maxWidth: 360, display: "block", margin: "0 auto" }}>
-      {bands.map((b) => (
-        <g key={b.label}>
-          <path d={b.path} fill={b.color} opacity="0.92" />
-          <text x={cx} y={b.y - 6} textAnchor="middle" fontFamily="Sora, sans-serif" fontSize="15" fontWeight="700" fill="#fff">{b.count}</text>
-          <text x={cx} y={b.y + 12} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize="10.5" letterSpacing="0.06em" fill="#ffffffcc">{b.label.toUpperCase()}</text>
-        </g>
-      ))}
+    <svg viewBox={`0 0 400 ${totalH}`} style={{ width: "100%", maxWidth: 360, display: "block", margin: "0 auto" }}>
+      {stages.map((s, i) => {
+        const w = widthFor(s.count);
+        const y = padTop + i * (barH + gap);
+        const x = 200 - w / 2;
+        return (
+          <g key={s.label}>
+            <rect x={x} y={y} width={w} height={barH} rx={10} fill={s.color} opacity="0.92" />
+            <text x={200} y={y + barH / 2 - 3} textAnchor="middle" fontFamily="Sora, sans-serif" fontSize="16" fontWeight="700" fill="#fff">{s.count}</text>
+            <text x={200} y={y + barH / 2 + 15} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize="10.5" letterSpacing="0.06em" fill="#ffffffcc">{s.label.toUpperCase()}</text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -168,6 +176,57 @@ function AnalyticsPanel({ followups, totalOverdue }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ---------- RM detail modal (Admin) ---------- */
+function RMDetailModal({ rm, followups, onClose, onEdit, onDelete, onToggleDone }) {
+  const list = useMemo(() => sortByWhen(followups.filter((f) => f.rm_name === rm)), [followups, rm]);
+  const counts = useMemo(() => {
+    const c = { Hot: 0, Warm: 0, Cold: 0 };
+    list.forEach((f) => c[f.lead_type]++);
+    return c;
+  }, [list]);
+  const totalValue = useMemo(() => list.reduce((s, f) => s + Number(f.quoted_value || 0), 0), [list]);
+  const overdueCount = useMemo(() => list.filter(isOverdue).length, [list]);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#14213Db3", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 16 }}>
+      <div style={{ background: "#fff", borderRadius: 16, padding: "24px 26px", width: "100%", maxWidth: 660, maxHeight: "86vh", overflowY: "auto", boxShadow: "0 20px 60px #14213D33" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontSize: 12, color: "#8891A3", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>RM detail</div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: 22, color: "#14213D" }}>{rm}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#8891A3" }}><X size={20} /></button>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+          <StatCard label="Total leads" value={list.length} />
+          <StatCard label="Pipeline value" value={fmtValue(totalValue)} />
+          <StatCard label="Overdue" value={overdueCount} accent={overdueCount ? "#C0392B" : undefined} />
+        </div>
+
+        <div style={{ display: "flex", gap: 16, marginBottom: 18, flexWrap: "wrap" }}>
+          {Object.keys(LEAD_TYPES).map((t) => (
+            <div key={t} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <LeadBadge type={t} />
+              <span style={{ fontWeight: 800, fontFamily: "Sora, sans-serif" }}>{counts[t]}</span>
+            </div>
+          ))}
+        </div>
+
+        {list.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "40px 10px", color: "#8891A3", background: "#F7F8FA", borderRadius: 12 }}>
+            No follow-ups for this RM yet.
+          </div>
+        ) : (
+          list.map((f) => (
+            <FollowupRow key={f.id} f={f} showRM={false} onEdit={onEdit} onDelete={onDelete} onToggleDone={onToggleDone} />
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -604,6 +663,7 @@ export default function App() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [showChangePw, setShowChangePw] = useState(false);
+  const [viewingRM, setViewingRM] = useState(null);
 
   // RM view filters
   const [rmTimeframe, setRmTimeframe] = useState("All");
@@ -850,20 +910,22 @@ export default function App() {
                   <th style={{ padding: "6px 8px", fontWeight: 600 }}>Cold</th>
                   <th style={{ padding: "6px 8px", fontWeight: 600 }}>Total</th>
                   <th style={{ padding: "6px 8px", fontWeight: 600 }}>Overdue</th>
+                  <th style={{ padding: "6px 8px" }}></th>
                 </tr>
               </thead>
               <tbody>
                 {Object.keys(perRM).length === 0 && (
-                  <tr><td colSpan="6" style={{ padding: "14px 8px", color: "#8891A3" }}>No RM data yet.</td></tr>
+                  <tr><td colSpan="7" style={{ padding: "14px 8px", color: "#8891A3" }}>No RM data yet.</td></tr>
                 )}
                 {Object.entries(perRM).map(([name, c]) => (
-                  <tr key={name} style={{ borderTop: "1px solid #F0F2F5" }}>
+                  <tr key={name} className="rm-row" onClick={() => setViewingRM(name)} style={{ borderTop: "1px solid #F0F2F5", cursor: "pointer" }}>
                     <td style={{ padding: "8px", fontWeight: 700 }}>{name}</td>
                     <td style={{ padding: "8px", color: LEAD_TYPES.Hot.color, fontWeight: 700 }}>{c.Hot}</td>
                     <td style={{ padding: "8px", color: LEAD_TYPES.Warm.color, fontWeight: 700 }}>{c.Warm}</td>
                     <td style={{ padding: "8px", color: LEAD_TYPES.Cold.color, fontWeight: 700 }}>{c.Cold}</td>
                     <td style={{ padding: "8px", fontWeight: 700 }}>{c.total}</td>
                     <td style={{ padding: "8px", color: c.overdue ? "#C0392B" : "#8891A3", fontWeight: 700 }}>{c.overdue}</td>
+                    <td style={{ padding: "8px", color: "#C7CDD8" }}><ChevronRight size={15} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -896,6 +958,17 @@ export default function App() {
 
       {showForm && (
         <FollowupForm initial={editing} rmFixed={null} rmOptions={rmProfiles} onCancel={() => { setShowForm(false); setEditing(null); }} onSave={handleSave} />
+      )}
+
+      {viewingRM && (
+        <RMDetailModal
+          rm={viewingRM}
+          followups={followups}
+          onClose={() => setViewingRM(null)}
+          onEdit={(rec) => { setEditing(rec); setShowForm(true); setViewingRM(null); }}
+          onDelete={handleDelete}
+          onToggleDone={handleToggleDone}
+        />
       )}
     </div>
   );
