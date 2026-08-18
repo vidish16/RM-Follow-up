@@ -82,9 +82,11 @@ const fontImport = (
 
 function Logo({ size = 34 }) {
   return (
-    <div style={{ width: size, height: size, borderRadius: size * 0.26, background: ACCENT, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Sora, sans-serif", fontWeight: 800, fontSize: size * 0.4, flexShrink: 0 }}>
-      UC
-    </div>
+    <img
+      src="/uc-logo.png"
+      alt="Urban Company"
+      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0, display: "block" }}
+    />
   );
 }
 
