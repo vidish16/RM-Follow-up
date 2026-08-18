@@ -45,8 +45,11 @@ function fmtDateTime(ts) {
 async function logActivity(profile, action, target) {
   if (!profile) return;
   try {
-    await supabase.from("activity_log").insert({ actor_id: profile.id, actor_name: profile.full_name, action, target: target || null });
-  } catch (e) { /* non-fatal — never block the user's actual action over a logging failure */ }
+    const { error } = await supabase.from("activity_log").insert({ actor_id: profile.id, actor_name: profile.full_name, action, target: target || null });
+    if (error) console.error("Activity log insert failed:", error.message);
+  } catch (e) {
+    console.error("Activity log insert failed:", e.message);
+  }
 }
 function isOverdue(f) {
   if (f.status === "Done") return false;
@@ -317,6 +320,14 @@ function RMDetailModal({ rm, followups, onClose, onEdit, onDelete, onToggleDone 
   }, [list]);
   const totalValue = useMemo(() => list.reduce((s, f) => s + Number(f.quoted_value || 0), 0), [list]);
   const overdueCount = useMemo(() => list.filter(isOverdue).length, [list]);
+
+  useEffect(() => {
+    function handleKey(e) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "#14213Db3", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 16 }}>
