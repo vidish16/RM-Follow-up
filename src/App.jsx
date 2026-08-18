@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
-  Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search, ChevronRight,
+  Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search, ChevronRight, EyeOff, Eye,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -664,6 +664,7 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [showChangePw, setShowChangePw] = useState(false);
   const [viewingRM, setViewingRM] = useState(null);
+  const [showBreakdown, setShowBreakdown] = useState(true);
 
   // RM view filters
   const [rmTimeframe, setRmTimeframe] = useState("All");
@@ -900,7 +901,17 @@ export default function App() {
             <FunnelChart counts={allCounts} />
           </div>
           <div style={{ flex: "2 1 400px", background: "#fff", borderRadius: 16, border: "1px solid #E7EAEF", padding: "16px 18px", overflowX: "auto" }}>
-            <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Per-RM breakdown</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15 }}>Per-RM breakdown</div>
+              <button
+                onClick={() => setShowBreakdown(!showBreakdown)}
+                style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "1px solid #DDE2E8", borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#5A6478" }}
+              >
+                {showBreakdown ? <EyeOff size={13} /> : <Eye size={13} />}
+                {showBreakdown ? "Hide" : "Show"}
+              </button>
+            </div>
+            {showBreakdown && (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ color: "#8891A3", textAlign: "left" }}>
@@ -930,6 +941,7 @@ export default function App() {
                 ))}
               </tbody>
             </table>
+            )}
           </div>
         </div>
 

@@ -10,6 +10,7 @@ create table if not exists profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   full_name text not null,
   role text not null check (role in ('admin', 'rm')),
+  must_change_password boolean not null default true,
   created_at timestamptz default now()
 );
 
@@ -74,7 +75,20 @@ create policy "rm deletes own, admin deletes any"
 -- 1. Dashboard > Authentication > Users > Add user
 --    (enter an email + password, tick "Auto Confirm User")
 -- 2. Copy that user's UUID from the Users list
--- 3. Run:
---    insert into profiles (id, full_name, role)
---    values ('paste-uuid-here', 'Your Name', 'admin');
+-- 3. Run (must_change_password: false since you already chose
+--    your own real password just now):
+--    insert into profiles (id, full_name, role, must_change_password)
+--    values ('paste-uuid-here', 'Your Name', 'admin', false);
+-- ============================================================
+
+-- ============================================================
+-- MIGRATION — if you already ran this schema before and just
+-- added the must_change_password column, run this instead of
+-- recreating everything:
+--
+--   alter table profiles
+--     add column if not exists must_change_password boolean not null default true;
+--
+--   -- then mark your existing admin as already set up:
+--   update profiles set must_change_password = false where role = 'admin';
 -- ============================================================
