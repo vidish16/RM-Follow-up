@@ -6,7 +6,7 @@ export default async function handler(req, res) {
 
     const ctx = await requireAdmin(req, res);
     if (!ctx) return;
-    const { admin } = ctx;
+    const { admin, callerId, callerName } = ctx;
 
     const { rmUserId, newPassword } = req.body || {};
     if (!rmUserId || !newPassword) {
@@ -21,6 +21,11 @@ export default async function handler(req, res) {
 
     // Force them to set their own password again on next login
     await admin.from("profiles").update({ must_change_password: true }).eq("id", rmUserId);
+
+    const { data: rmProfile } = await admin.from("profiles").select("full_name").eq("id", rmUserId).single();
+    await admin.from("activity_log").insert({
+      actor_id: callerId, actor_name: callerName, action: "Reset RM password", target: rmProfile?.full_name || rmUserId,
+    });
 
     return res.status(200).json({ ok: true });
   } catch (e) {

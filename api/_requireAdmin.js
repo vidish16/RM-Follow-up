@@ -38,7 +38,7 @@ export async function requireAdmin(req, res) {
     const admin = createClient(supabaseUrl, serviceKey);
     const { data: profile, error: profileErr } = await admin
       .from("profiles")
-      .select("role")
+      .select("role, full_name")
       .eq("id", userData.user.id)
       .single();
 
@@ -51,7 +51,7 @@ export async function requireAdmin(req, res) {
       return null;
     }
 
-    return { admin };
+    return { admin, callerId: userData.user.id, callerName: profile.full_name };
   } catch (e) {
     res.status(500).json({ error: `Unexpected server error: ${e.message}` });
     return null;

@@ -82,13 +82,25 @@ create policy "rm deletes own, admin deletes any"
 -- ============================================================
 
 -- ============================================================
--- MIGRATION — if you already ran this schema before and just
--- added the must_change_password column, run this instead of
--- recreating everything:
---
---   alter table profiles
---     add column if not exists must_change_password boolean not null default true;
---
---   -- then mark your existing admin as already set up:
---   update profiles set must_change_password = false where role = 'admin';
+-- MIGRATION 2 — Activity log (who did what, and when)
+-- Run this if you already have the tables above set up.
 -- ============================================================
+
+create table if not exists activity_log (
+  id uuid primary key default gen_random_uuid(),
+  actor_id uuid references profiles(id) on delete set null,
+  actor_name text not null,
+  action text not null,
+  target text,
+  created_at timestamptz default now()
+);
+
+alter table activity_log enable row level security;
+
+create policy "insert own activity"
+  on activity_log for insert
+  with check (actor_id = auth.uid());
+
+create policy "view own activity, admin views all"
+  on activity_log for select
+  using (actor_id = auth.uid() or is_admin());

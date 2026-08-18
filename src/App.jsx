@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
   Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search, ChevronRight, EyeOff, Eye,
+  Undo2, History, RefreshCw,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -36,6 +37,16 @@ function fmtTime(t) {
 }
 function fmtValue(v) {
   return "₹" + Number(v || 0).toLocaleString("en-IN");
+}
+function fmtDateTime(ts) {
+  if (!ts) return "";
+  return new Date(ts).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "numeric", minute: "2-digit", hour12: true });
+}
+async function logActivity(profile, action, target) {
+  if (!profile) return;
+  try {
+    await supabase.from("activity_log").insert({ actor_id: profile.id, actor_name: profile.full_name, action, target: target || null });
+  } catch (e) { /* non-fatal — never block the user's actual action over a logging failure */ }
 }
 function isOverdue(f) {
   if (f.status === "Done") return false;
@@ -143,6 +154,17 @@ function StatCard({ label: lbl, value, accent }) {
   );
 }
 
+function UndoToast({ name, onUndo }) {
+  return (
+    <div style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: "#14213D", color: "#fff", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 14, boxShadow: "0 10px 30px #14213D40", zIndex: 70, maxWidth: "92vw" }}>
+      <span style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Deleted {name}</span>
+      <button onClick={onUndo} style={{ display: "flex", alignItems: "center", gap: 5, background: "#ffffff1a", border: "none", borderRadius: 8, padding: "6px 12px", color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 }}>
+        <Undo2 size={14} /> Undo
+      </button>
+    </div>
+  );
+}
+
 /* ---------- Analytics ---------- */
 function AnalyticsPanel({ followups, totalOverdue }) {
   const totalCount = followups.length;
@@ -150,12 +172,12 @@ function AnalyticsPanel({ followups, totalOverdue }) {
   const conversionRate = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
   const openPipeline = followups.filter((f) => f.status !== "Done").reduce((s, f) => s + Number(f.quoted_value || 0), 0);
 
-  const valueByRM = useMemo(() => {
+  const quotesByRM = useMemo(() => {
     const map = {};
-    followups.forEach((f) => { map[f.rm_name] = (map[f.rm_name] || 0) + Number(f.quoted_value || 0); });
+    followups.forEach((f) => { map[f.rm_name] = (map[f.rm_name] || 0) + 1; });
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [followups]);
-  const maxVal = Math.max(...valueByRM.map(([, v]) => v), 1);
+  const maxQuotes = Math.max(...quotesByRM.map(([, v]) => v), 1);
 
   return (
     <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #E7EAEF", padding: "18px 18px", marginBottom: 26 }}>
@@ -165,16 +187,16 @@ function AnalyticsPanel({ followups, totalOverdue }) {
         <StatCard label="Conversion rate" value={`${conversionRate}%`} />
         <StatCard label="Overdue follow-ups" value={totalOverdue} accent={totalOverdue ? "#C0392B" : undefined} />
       </div>
-      <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700, marginBottom: 8 }}>QUOTED VALUE BY RM</div>
-      {valueByRM.length === 0 && <div style={{ fontSize: 13, color: "#8891A3" }}>No data yet.</div>}
-      {valueByRM.map(([name, val]) => (
+      <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700, marginBottom: 8 }}>TOTAL QUOTES BY RM</div>
+      {quotesByRM.length === 0 && <div style={{ fontSize: 13, color: "#8891A3" }}>No data yet.</div>}
+      {quotesByRM.map(([name, count]) => (
         <div key={name} style={{ marginBottom: 9 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 3 }}>
             <span style={{ fontWeight: 700 }}>{name}</span>
-            <span style={{ fontFamily: "IBM Plex Mono, monospace" }}>{fmtValue(val)}</span>
+            <span style={{ fontFamily: "IBM Plex Mono, monospace" }}>{count}</span>
           </div>
           <div style={{ height: 8, borderRadius: 999, background: "#F0F2F5" }}>
-            <div style={{ height: 8, borderRadius: 999, background: ACCENT, width: `${(val / maxVal) * 100}%` }} />
+            <div style={{ height: 8, borderRadius: 999, background: ACCENT, width: `${(count / maxQuotes) * 100}%` }} />
           </div>
         </div>
       ))}
@@ -228,6 +250,63 @@ function RMDetailModal({ rm, followups, onClose, onEdit, onDelete, onToggleDone 
             <FollowupRow key={f.id} f={f} showRM={false} onEdit={onEdit} onDelete={onDelete} onToggleDone={onToggleDone} />
           ))
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Delete reason modal ---------- */
+const DELETE_REASONS = ["Pricing Issue", "Hired from Local/NoBroker", "CNR", "Not interested", "Others"];
+
+function DeleteReasonModal({ record, onCancel, onConfirm }) {
+  const [reason, setReason] = useState("");
+  const [otherText, setOtherText] = useState("");
+  const [err, setErr] = useState("");
+
+  function confirm() {
+    if (!reason) return setErr("Please select a reason.");
+    if (reason === "Others" && !otherText.trim()) return setErr("Please specify the reason.");
+    onConfirm(reason === "Others" ? `Others — ${otherText.trim()}` : reason);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#14213Db3", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 70, padding: 16 }}>
+      <div style={{ background: "#fff", borderRadius: 16, padding: "22px 24px", width: "100%", maxWidth: 380, boxShadow: "0 20px 60px #14213D33" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <h3 style={{ margin: 0, fontFamily: "Sora, sans-serif", fontSize: 17, color: "#14213D" }}>Why delete this lead?</h3>
+          <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: "#8891A3" }}><X size={18} /></button>
+        </div>
+        <div style={{ fontSize: 13, color: "#8891A3", marginBottom: 16 }}>{record.cx_name} · {record.contact}</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+          {DELETE_REASONS.map((r) => (
+            <button
+              key={r}
+              onClick={() => { setReason(r); setErr(""); }}
+              style={{
+                textAlign: "left", padding: "10px 12px", borderRadius: 9,
+                border: reason === r ? "2px solid #C0392B" : "1px solid #DDE2E8",
+                background: reason === r ? "#FBEAE8" : "#fff", color: reason === r ? "#C0392B" : "#3A4356",
+                fontWeight: 600, fontSize: 13.5, cursor: "pointer",
+              }}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+        {reason === "Others" && (
+          <input
+            style={{ ...inputStyle, marginBottom: 12 }}
+            placeholder="Specify reason"
+            value={otherText}
+            onChange={(e) => setOtherText(e.target.value)}
+            autoFocus
+          />
+        )}
+        {err && <div style={{ color: "#C0392B", fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+          <button onClick={onCancel} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 700, cursor: "pointer" }}>Cancel</button>
+          <button onClick={confirm} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#C0392B", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Delete lead</button>
+        </div>
       </div>
     </div>
   );
@@ -451,7 +530,7 @@ function LoginScreen({ onLoggedIn }) {
 }
 
 /* ---------- Forced first-login password change ---------- */
-function ForcedPasswordModal({ session, onDone }) {
+function ForcedPasswordModal({ session, profile, onDone }) {
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [msg, setMsg] = useState("");
@@ -471,6 +550,7 @@ function ForcedPasswordModal({ session, onDone }) {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
       });
     } catch (e) { /* non-fatal — worst case they're asked again next login */ }
+    logActivity(profile, "Set password (first login)");
     setBusy(false);
     onDone();
   }
@@ -498,7 +578,7 @@ function ForcedPasswordModal({ session, onDone }) {
 }
 
 /* ---------- Voluntary change-password panel (toggle, not forced) ---------- */
-function ChangePasswordPanel() {
+function ChangePasswordPanel({ profile }) {
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [msg, setMsg] = useState("");
@@ -513,6 +593,7 @@ function ChangePasswordPanel() {
     const { error } = await supabase.auth.updateUser({ password: pw });
     setBusy(false);
     if (error) return setMsg(error.message);
+    logActivity(profile, "Changed password");
     setMsg("Password updated.");
     setPw(""); setPw2("");
   }
@@ -530,6 +611,62 @@ function ChangePasswordPanel() {
       </div>
       {msg && <div style={{ fontSize: 12.5, marginTop: 8, color: msg === "Password updated." ? "#2E8B57" : "#C0392B", fontWeight: 600 }}>{msg}</div>}
     </form>
+  );
+}
+
+/* ---------- Activity log (Admin) ---------- */
+function ActivityLogPanel() {
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    const { data } = await supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(200);
+    setEntries(data || []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (open) load();
+  }, [open]);
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E7EAEF", padding: "18px 18px", marginBottom: 22 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <History size={16} color="#14213D" />
+          <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15 }}>Activity log</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {open && (
+            <button onClick={load} title="Refresh" style={{ display: "flex", alignItems: "center", background: "none", border: "1px solid #DDE2E8", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "#5A6478" }}>
+              <RefreshCw size={13} />
+            </button>
+          )}
+          <button onClick={() => setOpen(!open)} style={{ background: "none", border: "1px solid #DDE2E8", borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12.5, fontWeight: 600, color: "#5A6478" }}>
+            {open ? "Close" : "View"}
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 14, maxHeight: 360, overflowY: "auto" }}>
+          {loading && <div style={{ fontSize: 13, color: "#8891A3" }}>Loading…</div>}
+          {!loading && entries.length === 0 && <div style={{ fontSize: 13, color: "#8891A3" }}>No activity recorded yet.</div>}
+          {!loading && entries.map((e) => (
+            <div key={e.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "9px 0", borderTop: "1px solid #F0F2F5", fontSize: 13 }}>
+              <div>
+                <span style={{ fontWeight: 700 }}>{e.actor_name}</span>{" "}
+                <span style={{ color: "#5A6478" }}>{e.action.toLowerCase()}</span>
+                {e.target && <span style={{ color: "#8891A3" }}> — {e.target}</span>}
+              </div>
+              <div style={{ color: "#8891A3", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>{fmtDateTime(e.created_at)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -667,6 +804,8 @@ export default function App() {
   const [showChangePw, setShowChangePw] = useState(false);
   const [viewingRM, setViewingRM] = useState(null);
   const [showBreakdown, setShowBreakdown] = useState(true);
+  const [pendingDelete, setPendingDelete] = useState(null); // { record, reason, timeoutId }
+  const [deleteTarget, setDeleteTarget] = useState(null); // record awaiting a deletion reason
 
   // RM view filters
   const [rmTimeframe, setRmTimeframe] = useState("All");
@@ -693,11 +832,12 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  async function loadProfile(sess) {
+  async function loadProfile(sess, opts = {}) {
     setSession(sess);
     const { data } = await supabase.from("profiles").select("*").eq("id", sess.user.id).single();
     setProfile(data);
     setLoading(false);
+    if (opts.logLogin && data) logActivity(data, "Logged in");
   }
 
   async function loadFollowups() {
@@ -719,18 +859,51 @@ export default function App() {
   async function handleSave(data) {
     if (editing) {
       await supabase.from("followups").update(data).eq("id", editing.id);
+      logActivity(profile, "Edited follow-up", `${data.cx_name} (${data.rm_name})`);
     } else {
       await supabase.from("followups").insert(data);
+      logActivity(profile, "Added follow-up", `${data.cx_name} (${data.rm_name})`);
     }
     setShowForm(false); setEditing(null);
     loadFollowups();
   }
-  async function handleDelete(id) {
-    await supabase.from("followups").delete().eq("id", id);
-    loadFollowups();
+
+  // Delete is undo-able: the row disappears immediately, but the actual
+  // database delete is delayed a few seconds so "Undo" can cancel it.
+  async function commitDelete(record, reason) {
+    await supabase.from("followups").delete().eq("id", record.id);
+    logActivity(profile, "Deleted follow-up", `${record.cx_name} (${record.rm_name}) — Reason: ${reason}`);
   }
+  function handleDelete(id) {
+    const record = followups.find((f) => f.id === id);
+    if (!record) return;
+    setDeleteTarget(record);
+  }
+  function confirmDeleteWithReason(reason) {
+    const record = deleteTarget;
+    setDeleteTarget(null);
+    if (pendingDelete) {
+      clearTimeout(pendingDelete.timeoutId);
+      commitDelete(pendingDelete.record, pendingDelete.reason);
+    }
+    setFollowups((prev) => prev.filter((f) => f.id !== record.id));
+    const timeoutId = setTimeout(() => {
+      commitDelete(record, reason);
+      setPendingDelete((curr) => (curr && curr.record.id === record.id ? null : curr));
+    }, 6000);
+    setPendingDelete({ record, reason, timeoutId });
+  }
+  function handleUndoDelete() {
+    if (!pendingDelete) return;
+    clearTimeout(pendingDelete.timeoutId);
+    setFollowups((prev) => [...prev, pendingDelete.record]);
+    setPendingDelete(null);
+  }
+
   async function handleToggleDone(f) {
-    await supabase.from("followups").update({ status: f.status === "Done" ? "Pending" : "Done" }).eq("id", f.id);
+    const newStatus = f.status === "Done" ? "Pending" : "Done";
+    await supabase.from("followups").update({ status: newStatus }).eq("id", f.id);
+    logActivity(profile, newStatus === "Done" ? "Marked follow-up done" : "Marked follow-up pending", `${f.cx_name} (${f.rm_name})`);
     loadFollowups();
   }
   async function logout() {
@@ -797,11 +970,11 @@ export default function App() {
   }
 
   if (!session || !profile) {
-    return <LoginScreen onLoggedIn={loadProfile} />;
+    return <LoginScreen onLoggedIn={(sess) => loadProfile(sess, { logLogin: true })} />;
   }
 
   if (profile.must_change_password) {
-    return <ForcedPasswordModal session={session} onDone={() => setProfile({ ...profile, must_change_password: false })} />;
+    return <ForcedPasswordModal session={session} profile={profile} onDone={() => setProfile({ ...profile, must_change_password: false })} />;
   }
 
   /* ---------- RM VIEW ---------- */
@@ -840,7 +1013,7 @@ export default function App() {
             ))}
           </div>
 
-          {showChangePw && <ChangePasswordPanel />}
+          {showChangePw && <ChangePasswordPanel profile={profile} />}
 
           <FilterRibbon
             timeframe={rmTimeframe} setTimeframe={setRmTimeframe}
@@ -864,6 +1037,12 @@ export default function App() {
         {showForm && (
           <FollowupForm initial={editing} rmFixed={profile} rmOptions={[]} onCancel={() => { setShowForm(false); setEditing(null); }} onSave={handleSave} />
         )}
+
+        {deleteTarget && (
+          <DeleteReasonModal record={deleteTarget} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDeleteWithReason} />
+        )}
+
+        {pendingDelete && <UndoToast name={pendingDelete.record.cx_name} onUndo={handleUndoDelete} />}
       </div>
     );
   }
@@ -894,9 +1073,11 @@ export default function App() {
           </div>
         </div>
 
-        {showChangePw && <ChangePasswordPanel />}
+        {showChangePw && <ChangePasswordPanel profile={profile} />}
 
         <ManageRMs rmProfiles={rmProfiles} session={session} onCreated={loadRmProfiles} />
+
+        <ActivityLogPanel />
 
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 26 }}>
           <div style={{ flex: "1 1 340px", background: "#14213D", borderRadius: 16, padding: "20px 16px" }}>
@@ -984,6 +1165,12 @@ export default function App() {
           onToggleDone={handleToggleDone}
         />
       )}
+
+      {deleteTarget && (
+        <DeleteReasonModal record={deleteTarget} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDeleteWithReason} />
+      )}
+
+      {pendingDelete && <UndoToast name={pendingDelete.record.cx_name} onUndo={handleUndoDelete} />}
     </div>
   );
 }

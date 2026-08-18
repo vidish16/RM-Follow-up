@@ -6,7 +6,7 @@ export default async function handler(req, res) {
 
     const ctx = await requireAdmin(req, res);
     if (!ctx) return;
-    const { admin } = ctx;
+    const { admin, callerId, callerName } = ctx;
 
     const { rms } = req.body || {};
     if (!Array.isArray(rms) || rms.length === 0) {
@@ -42,6 +42,13 @@ export default async function handler(req, res) {
       }
 
       results.push({ email, ok: true });
+    }
+
+    const createdCount = results.filter((r) => r.ok).length;
+    if (createdCount > 0) {
+      await admin.from("activity_log").insert({
+        actor_id: callerId, actor_name: callerName, action: "Bulk-created RM logins", target: `${createdCount} RM(s)`,
+      });
     }
 
     return res.status(200).json({ results });

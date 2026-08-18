@@ -6,7 +6,7 @@ export default async function handler(req, res) {
 
     const ctx = await requireAdmin(req, res);
     if (!ctx) return; // requireAdmin already sent the error response
-    const { admin } = ctx;
+    const { admin, callerId, callerName } = ctx;
 
     const { fullName, email } = req.body || {};
     const tempPassword = (req.body?.tempPassword || "123456").trim();
@@ -28,6 +28,10 @@ export default async function handler(req, res) {
       .from("profiles")
       .insert({ id: created.user.id, full_name: fullName, role: "rm", must_change_password: true });
     if (insertErr) return res.status(400).json({ error: insertErr.message });
+
+    await admin.from("activity_log").insert({
+      actor_id: callerId, actor_name: callerName, action: "Created RM login", target: `${fullName} (${email})`,
+    });
 
     return res.status(200).json({ ok: true, id: created.user.id });
   } catch (e) {
