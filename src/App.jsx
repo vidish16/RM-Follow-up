@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
   Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search, ChevronRight, EyeOff, Eye,
-  Undo2, History, RefreshCw,
+  Undo2, History, RefreshCw, MessageSquare,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -156,7 +156,7 @@ function StatCard({ label: lbl, value, accent }) {
 
 function UndoToast({ name, onUndo }) {
   return (
-    <div style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: "#14213D", color: "#fff", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 14, boxShadow: "0 10px 30px #14213D40", zIndex: 70, maxWidth: "92vw" }}>
+    <div style={{ position: "fixed", left: "50%", bottom: "calc(24px + env(safe-area-inset-bottom, 0px))", transform: "translateX(-50%)", background: "#14213D", color: "#fff", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 14, boxShadow: "0 10px 30px #14213D40", zIndex: 9999, maxWidth: "92vw" }}>
       <span style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Deleted {name}</span>
       <button onClick={onUndo} style={{ display: "flex", alignItems: "center", gap: 5, background: "#ffffff1a", border: "none", borderRadius: 8, padding: "6px 12px", color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 }}>
         <Undo2 size={14} /> Undo
@@ -357,7 +357,7 @@ function FollowupForm({ initial, rmFixed, rmOptions, onCancel, onSave }) {
   const [f, setF] = useState(
     initial
       ? { ...initial }
-      : { rm_id: rmFixed?.id || "", rm_name: rmFixed?.full_name || "", cx_name: "", contact: "", quoted_value: "", follow_up_date: "", follow_up_time: "", lead_type: "Warm" }
+      : { rm_id: rmFixed?.id || "", rm_name: rmFixed?.full_name || "", cx_name: "", contact: "", quoted_value: "", follow_up_date: "", follow_up_time: "", lead_type: "Warm", comment: "" }
   );
   const [err, setErr] = useState("");
 
@@ -442,6 +442,16 @@ function FollowupForm({ initial, rmFixed, rmOptions, onCancel, onSave }) {
             })}
           </div>
         </div>
+        <div style={{ marginBottom: 8, marginTop: 14 }}>
+          <label style={label}>Comment (optional)</label>
+          <textarea
+            rows={3}
+            style={{ ...inputStyle, resize: "vertical", fontFamily: "Inter, sans-serif" }}
+            placeholder="Any notes about this lead…"
+            value={f.comment || ""}
+            onChange={(e) => setF({ ...f, comment: e.target.value })}
+          />
+        </div>
         {err && <div style={{ color: "#C0392B", fontSize: 13, margin: "10px 0 0", fontWeight: 600 }}>{err}</div>}
         <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
           <button type="button" onClick={onCancel} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 700, cursor: "pointer" }}>Cancel</button>
@@ -455,29 +465,37 @@ function FollowupForm({ initial, rmFixed, rmOptions, onCancel, onSave }) {
 function FollowupRow({ f, showRM, onEdit, onDelete, onToggleDone }) {
   const overdue = isOverdue(f);
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", background: "#fff", borderRadius: 12, border: "1px solid #E7EAEF", borderLeft: `4px solid ${overdue ? "#C0392B" : f.status === "Done" ? "#2E8B57" : LEAD_TYPES[f.lead_type].color}`, marginBottom: 10, flexWrap: "wrap" }}>
-      <button onClick={() => onToggleDone(f)} title={f.status === "Done" ? "Mark pending" : "Mark done"}
-        style={{ width: 26, height: 26, borderRadius: "50%", border: f.status === "Done" ? "none" : "2px solid #C7CDD8", background: f.status === "Done" ? "#2E8B57" : "#fff", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
-        {f.status === "Done" && <Check size={15} strokeWidth={3} />}
-      </button>
-      <div style={{ flex: "1 1 180px", minWidth: 160 }}>
-        <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15, color: "#14213D" }}>{f.cx_name}</div>
-        <div style={{ fontSize: 12.5, color: "#8891A3", display: "flex", alignItems: "center", gap: 4, marginTop: 2, fontFamily: "IBM Plex Mono, monospace" }}>
-          <Phone size={11} /> {f.contact}
+    <div style={{ padding: "14px 16px", background: "#fff", borderRadius: 12, border: "1px solid #E7EAEF", borderLeft: `4px solid ${overdue ? "#C0392B" : f.status === "Done" ? "#2E8B57" : LEAD_TYPES[f.lead_type].color}`, marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <button onClick={() => onToggleDone(f)} title={f.status === "Done" ? "Mark pending" : "Mark done"}
+          style={{ width: 26, height: 26, borderRadius: "50%", border: f.status === "Done" ? "none" : "2px solid #C7CDD8", background: f.status === "Done" ? "#2E8B57" : "#fff", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+          {f.status === "Done" && <Check size={15} strokeWidth={3} />}
+        </button>
+        <div style={{ flex: "1 1 180px", minWidth: 160 }}>
+          <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15, color: "#14213D" }}>{f.cx_name}</div>
+          <div style={{ fontSize: 12.5, color: "#8891A3", display: "flex", alignItems: "center", gap: 4, marginTop: 2, fontFamily: "IBM Plex Mono, monospace" }}>
+            <Phone size={11} /> {f.contact}
+          </div>
+          {showRM && <div style={{ fontSize: 12, color: "#5A6478", marginTop: 3, fontWeight: 600 }}>RM: {f.rm_name}</div>}
         </div>
-        {showRM && <div style={{ fontSize: 12, color: "#5A6478", marginTop: 3, fontWeight: 600 }}>RM: {f.rm_name}</div>}
+        <div style={{ minWidth: 110, fontFamily: "IBM Plex Mono, monospace", fontWeight: 700, color: "#14213D", fontSize: 14.5 }}>{fmtValue(f.quoted_value)}</div>
+        <div style={{ minWidth: 150, fontSize: 13, color: "#3A4356" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 5 }}><Calendar size={12} /> {fmtDate(f.follow_up_date)}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3, color: "#8891A3" }}><Clock size={12} /> {fmtTime(f.follow_up_time)}</div>
+        </div>
+        <LeadBadge type={f.lead_type} />
+        {overdue && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#C0392B", background: "#FBEAE8", padding: "3px 8px", borderRadius: 999 }}>OVERDUE</span>}
+        <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+          <button onClick={() => onEdit(f)} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #E7EAEF", background: "#fff", color: "#5A6478", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Pencil size={13} /></button>
+          <button onClick={() => onDelete(f.id)} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #F3D8D5", background: "#fff", color: "#C0392B", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Trash2 size={13} /></button>
+        </div>
       </div>
-      <div style={{ minWidth: 110, fontFamily: "IBM Plex Mono, monospace", fontWeight: 700, color: "#14213D", fontSize: 14.5 }}>{fmtValue(f.quoted_value)}</div>
-      <div style={{ minWidth: 150, fontSize: 13, color: "#3A4356" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5 }}><Calendar size={12} /> {fmtDate(f.follow_up_date)}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3, color: "#8891A3" }}><Clock size={12} /> {fmtTime(f.follow_up_time)}</div>
-      </div>
-      <LeadBadge type={f.lead_type} />
-      {overdue && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#C0392B", background: "#FBEAE8", padding: "3px 8px", borderRadius: 999 }}>OVERDUE</span>}
-      <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
-        <button onClick={() => onEdit(f)} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #E7EAEF", background: "#fff", color: "#5A6478", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Pencil size={13} /></button>
-        <button onClick={() => onDelete(f.id)} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #F3D8D5", background: "#fff", color: "#C0392B", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Trash2 size={13} /></button>
-      </div>
+      {f.comment && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #E7EAEF", fontSize: 12.5, color: "#5A6478", display: "flex", gap: 6, alignItems: "flex-start" }}>
+          <MessageSquare size={12} style={{ marginTop: 2, flexShrink: 0, color: "#8891A3" }} />
+          <span style={{ fontStyle: "italic" }}>{f.comment}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -890,7 +908,7 @@ export default function App() {
     const timeoutId = setTimeout(() => {
       commitDelete(record, reason);
       setPendingDelete((curr) => (curr && curr.record.id === record.id ? null : curr));
-    }, 6000);
+    }, 8000);
     setPendingDelete({ record, reason, timeoutId });
   }
   function handleUndoDelete() {

@@ -104,3 +104,10 @@ create policy "insert own activity"
 create policy "view own activity, admin views all"
   on activity_log for select
   using (actor_id = auth.uid() or is_admin());
+
+-- ============================================================
+-- MIGRATION 3 — Comment field on each follow-up
+-- Run this if you already have the tables above set up.
+-- ============================================================
+
+alter table followups add column if not exists comment text;
