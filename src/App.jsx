@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
   Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search, ChevronRight, EyeOff, Eye,
-  Undo2, History, RefreshCw, MessageSquare,
+  Undo2, History, RefreshCw, MessageSquare, Upload,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -72,6 +72,89 @@ function matchesTimeframe(f, tf) {
   if (tf === "Tomorrow") return dt >= startTomorrow && dt < startDayAfter;
   if (tf === "This Week") return dt >= startToday && dt < endWeek;
   return true;
+}
+
+/* ---------- Bulk lead import parsing ---------- */
+function parseSheetDate(dateStr) {
+  const parts = (dateStr || "").trim().split("/");
+  if (parts.length !== 3) return null;
+  let [m, d, y] = parts.map((p) => p.trim());
+  if (y.length === 2) y = "20" + y;
+  m = m.padStart(2, "0");
+  d = d.padStart(2, "0");
+  if (!/^\d{4}$/.test(y) || !/^\d{1,2}$/.test(m) || !/^\d{1,2}$/.test(d)) return null;
+  return `${y}-${m}-${d}`;
+}
+function normalizeLeadType(raw) {
+  const t = (raw || "").trim().toLowerCase();
+  if (t === "hot") return "Hot";
+  if (t === "warm") return "Warm";
+  if (t === "cold") return "Cold";
+  return null;
+}
+// Accepts either 6 columns (RM name, CX name, Survey Date, Lead Type, Follow-up Date, Total Quoted GSV)
+// or 7 columns (same, with Non-Paid Attribution inserted before Follow-up Date) — whichever your sheet has.
+function parseBulkLeads(text, rmProfiles) {
+  const rmByName = {};
+  rmProfiles.forEach((r) => { rmByName[r.full_name.trim().toLowerCase()] = r; });
+
+  const lines = text.split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.trim());
+  const delimiter = lines[0]?.includes("\t") ? "\t" : ",";
+
+  const valid = [];
+  const invalid = [];
+
+  for (const line of lines) {
+    const cols = line.split(delimiter).map((c) => c.trim());
+    if (cols[0]?.toLowerCase() === "rm name") continue; // skip header row if pasted
+    if (cols.length !== 6 && cols.length !== 7) {
+      invalid.push({ line, error: `Expected 6 or 7 columns, found ${cols.length}` });
+      continue;
+    }
+
+    let rmNameRaw, cxName, surveyDate, leadTypeRaw, attribution, followUpDateRaw, quotedRaw;
+    if (cols.length === 7) {
+      [rmNameRaw, cxName, surveyDate, leadTypeRaw, attribution, followUpDateRaw, quotedRaw] = cols;
+    } else {
+      [rmNameRaw, cxName, surveyDate, leadTypeRaw, followUpDateRaw, quotedRaw] = cols;
+      attribution = "";
+    }
+
+    const rm = rmByName[rmNameRaw.trim().toLowerCase()];
+    if (!rm) {
+      invalid.push({ line, error: `RM not found: "${rmNameRaw}"` });
+      continue;
+    }
+    const leadType = normalizeLeadType(leadTypeRaw);
+    if (!leadType) {
+      invalid.push({ line, error: `Invalid lead type: "${leadTypeRaw}" (must be Hot/Warm/Cold)` });
+      continue;
+    }
+    const followUpDate = parseSheetDate(followUpDateRaw);
+    if (!followUpDate) {
+      invalid.push({ line, error: `Invalid follow-up date: "${followUpDateRaw}" (expected M/D/YYYY)` });
+      continue;
+    }
+    const quotedValue = Number((quotedRaw || "0").replace(/[^0-9.]/g, "")) || 0;
+
+    const commentParts = [];
+    if (surveyDate) commentParts.push(`Survey date: ${surveyDate}`);
+    if (attribution) commentParts.push(`Reason: ${attribution}`);
+
+    valid.push({
+      rm_id: rm.id,
+      rm_name: rm.full_name,
+      cx_name: cxName || "Unknown",
+      contact: "0000000000",
+      quoted_value: quotedValue,
+      follow_up_date: followUpDate,
+      follow_up_time: "11:00:00",
+      lead_type: leadType,
+      status: "Pending",
+      comment: commentParts.join(" · ") || null,
+    });
+  }
+  return { valid, invalid };
 }
 
 const inputStyle = {
@@ -810,6 +893,86 @@ function ManageRMs({ rmProfiles, session, onCreated }) {
   );
 }
 
+/* ---------- Bulk upload leads (Admin) ---------- */
+function BulkUploadLeads({ profile, rmProfiles, onImported }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [summary, setSummary] = useState(null);
+
+  async function doImport() {
+    setSummary(null);
+    const { valid, invalid } = parseBulkLeads(text, rmProfiles);
+    if (valid.length === 0 && invalid.length === 0) return;
+
+    setBusy(true);
+    let inserted = 0;
+    let insertError = null;
+    if (valid.length > 0) {
+      const { error } = await supabase.from("followups").insert(valid);
+      if (error) insertError = error.message;
+      else inserted = valid.length;
+    }
+    setBusy(false);
+    setSummary({ inserted, invalid, insertError });
+    if (inserted > 0) {
+      logActivity(profile, "Bulk imported leads", `${inserted} lead${inserted !== 1 ? "s" : ""}`);
+      onImported();
+    }
+  }
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E7EAEF", padding: "18px 18px", marginBottom: 22 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Upload size={16} color="#14213D" />
+          <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15 }}>Bulk upload leads</div>
+        </div>
+        <button onClick={() => setOpen(!open)} style={{ background: "none", border: "1px solid #DDE2E8", borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12.5, fontWeight: 600, color: "#5A6478" }}>
+          {open ? "Close" : "Open"}
+        </button>
+      </div>
+      {open && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 12.5, color: "#8891A3", marginBottom: 8, lineHeight: 1.5 }}>
+            Paste rows straight from your sheet — columns: <strong>RM name, CX name, Survey Date, Lead Type, Follow-up Date, Total Quoted GSV</strong> (a <strong>Non-Paid Attribution</strong> column between Lead Type and Follow-up Date is also fine if your sheet has it).
+            Contact number isn't in your sheet, so it defaults to <code>0000000000</code>; follow-up time defaults to <code>11:00 AM</code>. Both are editable per-lead afterward. Survey date and attribution (if present) get saved into the Comment field.
+          </div>
+          <textarea rows={8} style={{ ...inputStyle, marginBottom: 10, fontFamily: "IBM Plex Mono, monospace", fontSize: 12 }} placeholder="Paste sheet rows here…" value={text} onChange={(e) => setText(e.target.value)} />
+          <button disabled={busy || !text.trim()} onClick={doImport} style={{ padding: "10px 18px", borderRadius: 9, border: "none", background: ACCENT, color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13.5 }}>
+            {busy ? "Importing…" : "Import leads"}
+          </button>
+
+          {summary && (
+            <div style={{ marginTop: 14 }}>
+              {summary.insertError && (
+                <div style={{ color: "#C0392B", fontWeight: 600, fontSize: 12.5, marginBottom: 8 }}>Import failed: {summary.insertError}</div>
+              )}
+              {summary.inserted > 0 && (
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#2E8B57", marginBottom: 6 }}>
+                  {summary.inserted} lead{summary.inserted !== 1 ? "s" : ""} imported.
+                </div>
+              )}
+              {summary.invalid.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: "#C0392B", marginBottom: 4 }}>
+                    {summary.invalid.length} row(s) skipped:
+                  </div>
+                  {summary.invalid.map((r, i) => (
+                    <div key={i} style={{ fontSize: 12, color: "#8891A3", marginBottom: 2, fontFamily: "IBM Plex Mono, monospace" }}>
+                      {r.error} — {r.line.slice(0, 70)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Main App ---------- */
 export default function App() {
   const [loading, setLoading] = useState(true);
@@ -1094,6 +1257,8 @@ export default function App() {
         {showChangePw && <ChangePasswordPanel profile={profile} />}
 
         <ManageRMs rmProfiles={rmProfiles} session={session} onCreated={loadRmProfiles} />
+
+        <BulkUploadLeads profile={profile} rmProfiles={rmProfiles} onImported={loadFollowups} />
 
         <ActivityLogPanel />
 
