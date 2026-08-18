@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
   Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search, ChevronRight, EyeOff, Eye,
-  Undo2, History, RefreshCw, MessageSquare, Upload, Users,
+  Undo2, History, RefreshCw, MessageSquare, Upload, Users, ArrowUp, ArrowDown, ArrowUpDown, LogIn,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -14,7 +14,7 @@ const LEAD_TYPES = {
   Cold: { color: "#2F70A1", bg: "#E9F1F7", icon: Snowflake },
 };
 
-const TIMEFRAMES = ["All", "Today", "Tomorrow", "This Week", "Overdue"];
+const TIMEFRAMES = ["All", "Today", "Tomorrow", "This Week", "Overdue", "Non-overdue"];
 
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => {
   const value = `${String(h).padStart(2, "0")}:00`;
@@ -67,6 +67,7 @@ function applySort(list, sortBy) {
 function matchesTimeframe(f, tf) {
   if (tf === "All") return true;
   if (tf === "Overdue") return isOverdue(f);
+  if (tf === "Non-overdue") return !isOverdue(f);
   const dt = new Date(`${f.follow_up_date}T00:00:00`);
   const now = new Date();
   const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -255,6 +256,7 @@ function UndoToast({ name, onUndo }) {
 
 /* ---------- Analytics ---------- */
 function AnalyticsPanel({ followups, totalOverdue }) {
+  const [showQuotesByRM, setShowQuotesByRM] = useState(true);
   const totalCount = followups.length;
   const doneCount = followups.filter((f) => f.status === "Done").length;
   const conversionRate = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
@@ -275,19 +277,32 @@ function AnalyticsPanel({ followups, totalOverdue }) {
         <StatCard label="Conversion rate" value={`${conversionRate}%`} />
         <StatCard label="Overdue follow-ups" value={totalOverdue} accent={totalOverdue ? "#C0392B" : undefined} />
       </div>
-      <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700, marginBottom: 8 }}>TOTAL QUOTES BY RM</div>
-      {quotesByRM.length === 0 && <div style={{ fontSize: 13, color: "#8891A3" }}>No data yet.</div>}
-      {quotesByRM.map(([name, count]) => (
-        <div key={name} style={{ marginBottom: 9 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 3 }}>
-            <span style={{ fontWeight: 700 }}>{name}</span>
-            <span style={{ fontFamily: "IBM Plex Mono, monospace" }}>{count}</span>
-          </div>
-          <div style={{ height: 8, borderRadius: 999, background: "#F0F2F5" }}>
-            <div style={{ height: 8, borderRadius: 999, background: ACCENT, width: `${(count / maxQuotes) * 100}%` }} />
-          </div>
-        </div>
-      ))}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontSize: 12.5, color: "#8891A3", fontWeight: 700 }}>TOTAL QUOTES BY RM</div>
+        <button
+          onClick={() => setShowQuotesByRM(!showQuotesByRM)}
+          style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "1px solid #DDE2E8", borderRadius: 8, padding: "4px 9px", cursor: "pointer", fontSize: 11.5, fontWeight: 600, color: "#5A6478" }}
+        >
+          {showQuotesByRM ? <EyeOff size={12} /> : <Eye size={12} />}
+          {showQuotesByRM ? "Hide" : "Show"}
+        </button>
+      </div>
+      {showQuotesByRM && (
+        <>
+          {quotesByRM.length === 0 && <div style={{ fontSize: 13, color: "#8891A3" }}>No data yet.</div>}
+          {quotesByRM.map(([name, count]) => (
+            <div key={name} style={{ marginBottom: 9 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 3 }}>
+                <span style={{ fontWeight: 700 }}>{name}</span>
+                <span style={{ fontFamily: "IBM Plex Mono, monospace" }}>{count}</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 999, background: "#F0F2F5" }}>
+                <div style={{ height: 8, borderRadius: 999, background: ACCENT, width: `${(count / maxQuotes) * 100}%` }} />
+              </div>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -738,6 +753,20 @@ function ChangePasswordPanel({ profile }) {
 }
 
 /* ---------- Activity log (Admin) ---------- */
+function actionIcon(action) {
+  const a = (action || "").toLowerCase();
+  if (a.includes("delete")) return { Icon: Trash2, color: "#C0392B" };
+  if (a.includes("bulk")) return { Icon: Upload, color: ACCENT };
+  if (a.includes("added")) return { Icon: Plus, color: "#2E8B57" };
+  if (a.includes("edited")) return { Icon: Pencil, color: "#5A6478" };
+  if (a.includes("done")) return { Icon: Check, color: "#2E8B57" };
+  if (a.includes("pending")) return { Icon: RefreshCw, color: "#C8860D" };
+  if (a.includes("rm login") || a.includes("created rm")) return { Icon: UserPlus, color: ACCENT };
+  if (a.includes("password")) return { Icon: KeyRound, color: "#5A6478" };
+  if (a.includes("logged in")) return { Icon: LogIn, color: "#2F70A1" };
+  return { Icon: History, color: "#8891A3" };
+}
+
 function ActivityLogPanel() {
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState([]);
@@ -755,38 +784,49 @@ function ActivityLogPanel() {
   }, [open]);
 
   return (
-    <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E7EAEF", padding: "18px 18px", marginBottom: 22 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <History size={16} color="#14213D" />
-          <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 15 }}>Activity log</div>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {open && (
-            <button onClick={load} title="Refresh" style={{ display: "flex", alignItems: "center", background: "none", border: "1px solid #DDE2E8", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "#5A6478" }}>
-              <RefreshCw size={13} />
-            </button>
-          )}
-          <button onClick={() => setOpen(!open)} style={{ background: "none", border: "1px solid #DDE2E8", borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12.5, fontWeight: 600, color: "#5A6478" }}>
-            {open ? "Close" : "View"}
-          </button>
-        </div>
-      </div>
+    <div style={{ position: "fixed", top: 18, right: 18, zIndex: 65 }}>
+      <button
+        onClick={() => setOpen(!open)}
+        title="Activity log"
+        style={{ width: 42, height: 42, borderRadius: "50%", background: "#14213D", color: "#fff", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 4px 14px #14213D40" }}
+      >
+        <History size={18} />
+      </button>
 
       {open && (
-        <div style={{ marginTop: 14, maxHeight: 360, overflowY: "auto" }}>
+        <div style={{ position: "absolute", top: 50, right: 0, width: 340, maxWidth: "88vw", maxHeight: 440, overflowY: "auto", background: "#fff", borderRadius: 14, border: "1px solid #E7EAEF", boxShadow: "0 16px 44px #14213D30", padding: "14px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 14.5 }}>Activity log</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={load} title="Refresh" style={{ display: "flex", alignItems: "center", background: "none", border: "1px solid #DDE2E8", borderRadius: 8, padding: "5px 7px", cursor: "pointer", color: "#5A6478" }}>
+                <RefreshCw size={12} />
+              </button>
+              <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#8891A3" }}>
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
           {loading && <div style={{ fontSize: 13, color: "#8891A3" }}>Loading…</div>}
           {!loading && entries.length === 0 && <div style={{ fontSize: 13, color: "#8891A3" }}>No activity recorded yet.</div>}
-          {!loading && entries.map((e) => (
-            <div key={e.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "9px 0", borderTop: "1px solid #F0F2F5", fontSize: 13 }}>
-              <div>
-                <span style={{ fontWeight: 700 }}>{e.actor_name}</span>{" "}
-                <span style={{ color: "#5A6478" }}>{e.action.toLowerCase()}</span>
-                {e.target && <span style={{ color: "#8891A3" }}> — {e.target}</span>}
+          {!loading && entries.map((e) => {
+            const { Icon, color } = actionIcon(e.action);
+            return (
+              <div key={e.id} style={{ display: "flex", gap: 9, padding: "9px 0", borderTop: "1px solid #F0F2F5" }}>
+                <div style={{ width: 24, height: 24, borderRadius: "50%", background: `${color}1a`, color, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
+                  <Icon size={12} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5 }}>
+                    <span style={{ fontWeight: 700 }}>{e.actor_name}</span>{" "}
+                    <span style={{ color: "#5A6478" }}>{e.action.toLowerCase()}</span>
+                  </div>
+                  {e.target && <div style={{ color: "#8891A3", fontSize: 12, marginTop: 1, wordBreak: "break-word" }}>{e.target}</div>}
+                  <div style={{ color: "#B7BECB", fontSize: 11, marginTop: 2 }}>{fmtDateTime(e.created_at)}</div>
+                </div>
               </div>
-              <div style={{ color: "#8891A3", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>{fmtDateTime(e.created_at)}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -1025,6 +1065,7 @@ export default function App() {
   const [filterStatus, setFilterStatus] = useState("All");
   const [filterSortBy, setFilterSortBy] = useState("date");
   const [groupByRM, setGroupByRM] = useState(false);
+  const [breakdownSort, setBreakdownSort] = useState({ col: "rm_name", dir: "asc" });
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -1181,6 +1222,21 @@ export default function App() {
 
   const totalOverdue = useMemo(() => Object.values(perRM).reduce((s, c) => s + c.overdue, 0), [perRM]);
 
+  const sortedPerRM = useMemo(() => {
+    const entries = Object.entries(perRM);
+    const { col, dir } = breakdownSort;
+    const mult = dir === "asc" ? 1 : -1;
+    entries.sort((a, b) => {
+      if (col === "rm_name") return a[0].localeCompare(b[0]) * mult;
+      return (a[1][col] - b[1][col]) * mult;
+    });
+    return entries;
+  }, [perRM, breakdownSort]);
+
+  function toggleBreakdownSort(col) {
+    setBreakdownSort((prev) => (prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "asc" }));
+  }
+
   const shell = { minHeight: "100vh", background: "#F4F6F8", fontFamily: "Inter, sans-serif", color: "#14213D" };
 
   if (loading) {
@@ -1319,20 +1375,37 @@ export default function App() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ color: "#8891A3", textAlign: "left" }}>
-                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>RM</th>
-                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Hot</th>
-                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Warm</th>
-                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Cold</th>
-                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Total</th>
-                  <th style={{ padding: "6px 8px", fontWeight: 600 }}>Overdue</th>
+                  {[
+                    { key: "rm_name", label: "RM" },
+                    { key: "Hot", label: "Hot" },
+                    { key: "Warm", label: "Warm" },
+                    { key: "Cold", label: "Cold" },
+                    { key: "total", label: "Total" },
+                    { key: "overdue", label: "Overdue" },
+                  ].map((col) => (
+                    <th
+                      key={col.key}
+                      onClick={() => toggleBreakdownSort(col.key)}
+                      style={{ padding: "6px 8px", fontWeight: 600, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+                    >
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        {col.label}
+                        {breakdownSort.col === col.key ? (
+                          breakdownSort.dir === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />
+                        ) : (
+                          <ArrowUpDown size={12} style={{ opacity: 0.35 }} />
+                        )}
+                      </span>
+                    </th>
+                  ))}
                   <th style={{ padding: "6px 8px" }}></th>
                 </tr>
               </thead>
               <tbody>
-                {Object.keys(perRM).length === 0 && (
+                {sortedPerRM.length === 0 && (
                   <tr><td colSpan="7" style={{ padding: "14px 8px", color: "#8891A3" }}>No RM data yet.</td></tr>
                 )}
-                {Object.entries(perRM).map(([name, c]) => (
+                {sortedPerRM.map(([name, c]) => (
                   <tr key={name} className="rm-row" onClick={() => setViewingRM(name)} style={{ borderTop: "1px solid #F0F2F5", cursor: "pointer" }}>
                     <td style={{ padding: "8px", fontWeight: 700 }}>{name}</td>
                     <td style={{ padding: "8px", color: LEAD_TYPES.Hot.color, fontWeight: 700 }}>{c.Hot}</td>
