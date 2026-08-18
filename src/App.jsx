@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
   Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search, ChevronRight, EyeOff, Eye,
-  Undo2, History, RefreshCw, MessageSquare, Upload,
+  Undo2, History, RefreshCw, MessageSquare, Upload, Users,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -58,6 +58,11 @@ function sortByWhen(list) {
     (a, b) => new Date(`${a.follow_up_date}T${a.follow_up_time || "00:00"}`) -
       new Date(`${b.follow_up_date}T${b.follow_up_time || "00:00"}`)
   );
+}
+function applySort(list, sortBy) {
+  if (sortBy === "amount_desc") return [...list].sort((a, b) => Number(b.quoted_value || 0) - Number(a.quoted_value || 0));
+  if (sortBy === "amount_asc") return [...list].sort((a, b) => Number(a.quoted_value || 0) - Number(b.quoted_value || 0));
+  return sortByWhen(list);
 }
 function matchesTimeframe(f, tf) {
   if (tf === "All") return true;
@@ -396,7 +401,7 @@ function DeleteReasonModal({ record, onCancel, onConfirm }) {
 }
 
 /* ---------- Filter ribbon ---------- */
-function FilterRibbon({ timeframe, setTimeframe, search, setSearch, leadType, setLeadType, status, setStatus, rmFilter, setRmFilter, rmOptions, showRMFilter }) {
+function FilterRibbon({ timeframe, setTimeframe, search, setSearch, leadType, setLeadType, status, setStatus, rmFilter, setRmFilter, rmOptions, showRMFilter, sortBy, setSortBy, groupByRM, setGroupByRM }) {
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
@@ -430,6 +435,23 @@ function FilterRibbon({ timeframe, setTimeframe, search, setSearch, leadType, se
           <option value="Pending">Pending</option>
           <option value="Done">Done</option>
         </select>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ ...inputStyle, flex: "0 1 170px" }}>
+          <option value="date">Sort: Soonest follow-up</option>
+          <option value="amount_desc">Sort: Highest amount</option>
+          <option value="amount_asc">Sort: Lowest amount</option>
+        </select>
+        {showRMFilter && (
+          <button
+            onClick={() => setGroupByRM(!groupByRM)}
+            style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 9,
+              border: groupByRM ? "none" : "1px solid #DDE2E8", background: groupByRM ? "#14213D" : "#fff",
+              color: groupByRM ? "#fff" : "#5A6478", fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0,
+            }}
+          >
+            <Users size={14} /> Group by RM
+          </button>
+        )}
       </div>
     </div>
   );
@@ -993,6 +1015,7 @@ export default function App() {
   const [rmSearch, setRmSearch] = useState("");
   const [rmLeadType, setRmLeadType] = useState("All");
   const [rmStatus, setRmStatus] = useState("All");
+  const [rmSortBy, setRmSortBy] = useState("date");
 
   // Admin view filters
   const [filterTimeframe, setFilterTimeframe] = useState("All");
@@ -1000,6 +1023,8 @@ export default function App() {
   const [filterRM, setFilterRM] = useState("All");
   const [filterType, setFilterType] = useState("All");
   const [filterStatus, setFilterStatus] = useState("All");
+  const [filterSortBy, setFilterSortBy] = useState("date");
+  const [groupByRM, setGroupByRM] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -1093,7 +1118,7 @@ export default function App() {
 
   const rmFollowupsFiltered = useMemo(() => {
     if (!profile) return [];
-    let list = sortByWhen(followups.filter((f) => f.rm_id === profile.id));
+    let list = followups.filter((f) => f.rm_id === profile.id);
     list = list.filter((f) => matchesTimeframe(f, rmTimeframe));
     if (rmSearch.trim()) {
       const q = rmSearch.trim().toLowerCase();
@@ -1101,8 +1126,8 @@ export default function App() {
     }
     if (rmLeadType !== "All") list = list.filter((f) => f.lead_type === rmLeadType);
     if (rmStatus !== "All") list = list.filter((f) => f.status === rmStatus);
-    return list;
-  }, [followups, profile, rmTimeframe, rmSearch, rmLeadType, rmStatus]);
+    return applySort(list, rmSortBy);
+  }, [followups, profile, rmTimeframe, rmSearch, rmLeadType, rmStatus, rmSortBy]);
 
   const rmCounts = useMemo(() => {
     const c = { Hot: 0, Warm: 0, Cold: 0 };
@@ -1121,8 +1146,20 @@ export default function App() {
     if (filterRM !== "All") list = list.filter((f) => f.rm_name === filterRM);
     if (filterType !== "All") list = list.filter((f) => f.lead_type === filterType);
     if (filterStatus !== "All") list = list.filter((f) => f.status === filterStatus);
-    return sortByWhen(list);
-  }, [followups, filterTimeframe, filterSearch, filterRM, filterType, filterStatus]);
+    return applySort(list, filterSortBy);
+  }, [followups, filterTimeframe, filterSearch, filterRM, filterType, filterStatus, filterSortBy]);
+
+  // Grouped view: each RM's leads always ordered soonest-first, regardless
+  // of the sort dropdown above (which only governs the flat, ungrouped list).
+  const adminGroupedByRM = useMemo(() => {
+    const map = {};
+    adminFiltered.forEach((f) => {
+      if (!map[f.rm_name]) map[f.rm_name] = [];
+      map[f.rm_name].push(f);
+    });
+    Object.keys(map).forEach((name) => { map[name] = sortByWhen(map[name]); });
+    return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [adminFiltered]);
 
   const allCounts = useMemo(() => {
     const c = { Hot: 0, Warm: 0, Cold: 0 };
@@ -1201,6 +1238,7 @@ export default function App() {
             search={rmSearch} setSearch={setRmSearch}
             leadType={rmLeadType} setLeadType={setRmLeadType}
             status={rmStatus} setStatus={setRmStatus}
+            sortBy={rmSortBy} setSortBy={setRmSortBy}
             showRMFilter={false}
           />
 
@@ -1321,12 +1359,26 @@ export default function App() {
           rmFilter={filterRM} setRmFilter={setFilterRM}
           rmOptions={rmProfiles.map((r) => r.full_name)}
           showRMFilter={true}
+          sortBy={filterSortBy} setSortBy={setFilterSortBy}
+          groupByRM={groupByRM} setGroupByRM={setGroupByRM}
         />
 
         {adminFiltered.length === 0 ? (
           <div style={{ textAlign: "center", padding: "50px 20px", color: "#8891A3", background: "#fff", borderRadius: 14, border: "1px dashed #DDE2E8" }}>
             No follow-ups match these filters.
           </div>
+        ) : groupByRM ? (
+          adminGroupedByRM.map(([rmName, leads]) => (
+            <div key={rmName} style={{ marginBottom: 22 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 4px", marginBottom: 8 }}>
+                <div style={{ fontFamily: "Sora, sans-serif", fontWeight: 700, fontSize: 14.5, color: "#14213D" }}>{rmName}</div>
+                <div style={{ fontSize: 12, color: "#8891A3", fontWeight: 600 }}>{leads.length} lead{leads.length !== 1 ? "s" : ""}</div>
+              </div>
+              {leads.map((f) => (
+                <FollowupRow key={f.id} f={f} showRM={false} onEdit={(rec) => { setEditing(rec); setShowForm(true); }} onDelete={handleDelete} onToggleDone={handleToggleDone} />
+              ))}
+            </div>
+          ))
         ) : (
           adminFiltered.map((f) => (
             <FollowupRow key={f.id} f={f} showRM={true} onEdit={(rec) => { setEditing(rec); setShowForm(true); }} onDelete={handleDelete} onToggleDone={handleToggleDone} />
