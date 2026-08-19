@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Flame, Sun, Snowflake, Plus, X, Phone, Calendar, Clock, LogOut,
   Pencil, Trash2, Check, ShieldCheck, KeyRound, UserPlus, Search, ChevronRight, EyeOff, Eye,
-  Undo2, History, RefreshCw, MessageSquare, Upload, Users, ArrowUp, ArrowDown, ArrowUpDown, LogIn,
+  Undo2, History, RefreshCw, MessageSquare, Upload, Users, ArrowUp, ArrowDown, ArrowUpDown, LogIn, Layers,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -488,7 +488,7 @@ function FollowupForm({ initial, rmFixed, rmOptions, onCancel, onSave }) {
   const [f, setF] = useState(
     initial
       ? { ...initial }
-      : { rm_id: rmFixed?.id || "", rm_name: rmFixed?.full_name || "", cx_name: "", contact: "", quoted_value: "", follow_up_date: "", follow_up_time: "", lead_type: "Warm", comment: "" }
+      : { rm_id: rmFixed?.id || "", rm_name: rmFixed?.full_name || "", cx_name: "", contact: "", quoted_value: "", follow_up_date: "", follow_up_time: "", lead_type: "Warm", comment: "", attach: false }
   );
   const [err, setErr] = useState("");
 
@@ -583,6 +583,24 @@ function FollowupForm({ initial, rmFixed, rmOptions, onCancel, onSave }) {
             onChange={(e) => setF({ ...f, comment: e.target.value })}
           />
         </div>
+        <div style={{ marginBottom: 8, marginTop: 14 }}>
+          <label style={label}>Attach (add-ons — panels, wall moulds, etc.)</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            {[{ v: false, l: "No" }, { v: true, l: "Yes" }].map((opt) => {
+              const active = f.attach === opt.v;
+              return (
+                <button
+                  type="button"
+                  key={opt.l}
+                  onClick={() => setF({ ...f, attach: opt.v })}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: active ? "2px solid #14213D" : "1px solid #DDE2E8", background: active ? "#EEF0F4" : "#fff", color: active ? "#14213D" : "#5A6478", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}
+                >
+                  {opt.l}
+                </button>
+              );
+            })}
+          </div>
+        </div>
         {err && <div style={{ color: "#C0392B", fontSize: 13, margin: "10px 0 0", fontWeight: 600 }}>{err}</div>}
         <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
           <button type="button" onClick={onCancel} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1px solid #DDE2E8", background: "#fff", color: "#5A6478", fontWeight: 700, cursor: "pointer" }}>Cancel</button>
@@ -616,6 +634,11 @@ function FollowupRow({ f, showRM, onEdit, onDelete, onToggleDone }) {
         </div>
         <LeadBadge type={f.lead_type} />
         {overdue && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#C0392B", background: "#FBEAE8", padding: "3px 8px", borderRadius: 999 }}>OVERDUE</span>}
+        {f.attach && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 700, color: "#14213D", background: "#EEF0F4", padding: "3px 9px", borderRadius: 999 }}>
+            <Layers size={11} /> Add-ons
+          </span>
+        )}
         <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
           <button onClick={() => onEdit(f)} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #E7EAEF", background: "#fff", color: "#5A6478", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Pencil size={13} /></button>
           <button onClick={() => onDelete(f.id)} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #F3D8D5", background: "#fff", color: "#C0392B", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Trash2 size={13} /></button>

@@ -111,3 +111,12 @@ create policy "view own activity, admin views all"
 -- ============================================================
 
 alter table followups add column if not exists comment text;
+
+-- ============================================================
+-- MIGRATION 4 — "Attach" (add-ons like panels, wall moulds) field
+-- Run this if you already have the tables above set up.
+-- Existing rows automatically get "No" (false) since it's a
+-- NOT NULL column with a default.
+-- ============================================================
+
+alter table followups add column if not exists attach boolean not null default false;

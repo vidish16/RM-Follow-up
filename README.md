@@ -98,3 +98,44 @@ rm-followup-funnel/
 ├── .env.example
 └── package.json
 ```
+
+## Slack reminders (once daily, per RM + named admins)
+
+Every morning at 9:00 AM IST, each RM gets a Slack DM listing *all* of their pending follow-ups for that day. Any admins you name also get a DM with the **full** digest — every RM's follow-ups for the day, grouped by RM. This runs on a free GitHub Actions schedule, independent of anyone having the app open.
+
+### 1. Create a Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**.
+2. Name it (e.g. "Follow-up Reminders"), pick your workspace.
+3. Left sidebar → **OAuth & Permissions** → scroll to **Scopes** → **Bot Token Scopes** → add:
+   - `chat:write`
+   - `users:read.email`
+4. Scroll up → **Install to Workspace** → **Allow**.
+5. Copy the **Bot User OAuth Token** (starts with `xoxb-`).
+
+> This only works for RMs (and admins) whose email in the app matches their email in this Slack workspace.
+
+### 2. Add environment variables in Vercel
+
+Project → **Settings** → **Environment Variables**, add:
+- `SLACK_BOT_TOKEN` — the `xoxb-...` token from step 1
+- `CRON_SECRET` — any random string you make up (e.g. generate one at [randomkeygen.com](https://randomkeygen.com)) — this stops strangers from calling your digest endpoint
+- `SLACK_ADMIN_EMAILS` — comma-separated list of admin emails who should get the full digest, e.g. `vidish@urbancompany.com,anotheradmin@urbancompany.com` (leave blank or omit if no admins should get it)
+
+Redeploy after adding these.
+
+### 3. Add GitHub Actions secrets
+
+Repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**, add:
+- `CRON_SECRET` — the exact same value you used in Vercel
+- `APP_URL` — your live site's URL, no trailing slash (e.g. `https://rm-follow-up-iota.vercel.app`)
+
+### 4. Test it
+
+Repo → **Actions** tab → **Daily Slack Follow-up Digest** → **Run workflow** (this uses the manual trigger, no need to wait until 9 AM). Check the run's log for the response — it'll say how many reminders were sent, or list any errors per RM/admin.
+
+### Notes
+
+- Only follow-ups still marked **Pending** and scheduled for **today, this exact hour** get a reminder — done ones and other hours are skipped.
+- If an RM's Slack email doesn't match their app login email, they'll show up as a "Slack lookup failed" error in the Action log — worth checking the first few runs.
+- Free tier of GitHub Actions is unlimited for public repos, and this job only takes a couple of seconds to run, so cost isn't a concern either way.
